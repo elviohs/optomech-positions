@@ -1,0 +1,109 @@
+{
+  "version": 2,
+  "zemax_file": "zemax_ejemplo.txt",
+  "params": {
+    "t_cold_k": 130.0,
+    "t_warm_k": 293.0,
+    "cte_mean_ppm": 20.67,
+    "use_manual_factor": false,
+    "manual_factor_pct": 0.337,
+    "ref_x": 0,
+    "ref_y": 0,
+    "ref_z": 150,
+    "round_pos_mm": 0.1,
+    "round_ang_deg": 0.1,
+    "ignore_labels": "tilt x; tilt y; tilt z; field rotation",
+    "backcalc_mode": "exacto",
+    "cte_stab_ppm": 20.67,
+    "fem_units": "auto",
+    "fem_nodes": 5,
+    "fem_model": "trayectoria",
+    "fem_warn_mm": 50.0,
+    "material": "Al 6061-T6 (NIST)",
+    "mat_for_conversion": true,
+    "mat_for_stability": true
+  },
+  "elements": [
+    {
+      "surf_id": 1,
+      "zemax_label": "Objeto",
+      "acronym": "OBJETO",
+      "description": "",
+      "include": false,
+      "pos_offset": 0,
+      "pos_step": "",
+      "ang_step": "",
+      "override": "",
+      "fem_point": ""
+    },
+    {
+      "surf_id": 3,
+      "zemax_label": "M1",
+      "acronym": "M1",
+      "description": "Espejo primario",
+      "include": true,
+      "pos_offset": 0,
+      "pos_step": "",
+      "ang_step": "",
+      "override": "",
+      "fem_point": ""
+    },
+    {
+      "surf_id": 5,
+      "zemax_label": "Pupila",
+      "acronym": "PUPILA",
+      "description": "",
+      "include": false,
+      "pos_offset": 0,
+      "pos_step": "",
+      "ang_step": "",
+      "override": "",
+      "fem_point": ""
+    },
+    {
+      "surf_id": 6,
+      "zemax_label": "M2",
+      "acronym": "M2",
+      "description": "Espejo de pliegue",
+      "include": true,
+      "pos_offset": 0,
+      "pos_step": "",
+      "ang_step": "",
+      "override": "",
+      "fem_point": ""
+    },
+    {
+      "surf_id": 8,
+      "zemax_label": "M3",
+      "acronym": "M3",
+      "description": "Espejo terciario",
+      "include": true,
+      "pos_offset": 0,
+      "pos_step": "0.05",
+      "ang_step": "0.05",
+      "override": "",
+      "fem_point": ""
+    },
+    {
+      "surf_id": 9,
+      "zemax_label": "Detector",
+      "acronym": "DETECTOR",
+      "description": "",
+      "include": false,
+      "pos_offset": 0,
+      "pos_step": "",
+      "ang_step": "",
+      "override": "",
+      "fem_point": ""
+    }
+  ],
+  "fem_t0": "FEM_T0.txt",
+  "fem_cases": [
+    {
+      "label": "T+1h",
+      "file": "FEM_T1h.txt"
+    }
+  ],
+  "out_dir": "resultados",
+  "out_name": "ejemplo_3_espejos.xlsx"
+}

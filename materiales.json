@@ -1,0 +1,103 @@
+{
+  "_LEEME": [
+    "Curvas de dilatación térmica. Definición NIST: dL/L = (L(T) - L293) / L293.",
+    "nist_poly: dL/L = escala * (coef[0] + coef[1]*T + coef[2]*T^2 + ...), valido de t_min a t_max (K).",
+    "tabla: pares T (K) / dL_L (multiplicado por 'escala'), interpolación lineal.",
+    "Pon 'verificado': true solo después de comprobar los coeficientes contra la fuente original.",
+    "Las entradas cuyo nombre empieza por '_' se ignoran."
+  ],
+  "materiales": {
+    "Al 6061-T6 (NIST)": {
+      "tipo": "nist_poly",
+      "coef": [
+        -412.77,
+        -0.30389,
+        0.0087696,
+        -9.9821e-06,
+        0.0
+      ],
+      "escala": 1e-05,
+      "t_low": 18,
+      "f_low": -415.45,
+      "t_min": 4,
+      "t_max": 300,
+      "error_ajuste_pct": 4,
+      "fuente": "NIST Cryogenic Material Properties, 6061-T6 Aluminum, Linear Expansion [(L-L293)/L293]·1e5, rango de datos y ecuación 4-300 K, error de ajuste 4 %. https://trc.nist.gov/cryogenics/materials/6061%20Aluminum/6061_T6Aluminum_rev.htm",
+      "verificado": true
+    },
+    "AISI 304 inox (NIST)": {
+      "tipo": "nist_poly",
+      "coef": [
+        -295.54,
+        -0.39811,
+        0.0092683,
+        -2.0261e-05,
+        1.7127e-08
+      ],
+      "escala": 1e-05,
+      "t_low": 23,
+      "f_low": -300.04,
+      "t_min": 4,
+      "t_max": 300,
+      "error_ajuste_pct": 5,
+      "fuente": "NIST Cryogenic Material Properties, 304 Stainless (UNS S30400), Linear Expansion [(L-L293)/L293]·1e5, rango de datos y ecuación 4-300 K, error de ajuste 5 % (mismos coeficientes que el 316 en NIST). https://trc.nist.gov/cryogenics/materials/304Stainless/304Stainless_rev.htm",
+      "verificado": true
+    },
+    "AISI 316 inox (NIST)": {
+      "tipo": "nist_poly",
+      "coef": [
+        -295.54,
+        -0.39811,
+        0.0092683,
+        -2.0261e-05,
+        1.7127e-08
+      ],
+      "escala": 1e-05,
+      "t_low": 23,
+      "f_low": -300.04,
+      "t_min": 4,
+      "t_max": 300,
+      "error_ajuste_pct": 5,
+      "fuente": "NIST Cryogenic Material Properties, 316 Stainless, Linear Expansion [(L-L293)/L293]·1e5, rango de datos y ecuación 4-300 K, error de ajuste 5 %. https://trc.nist.gov/cryogenics/materials/316Stainless/316Stainless_rev.htm",
+      "verificado": true
+    },
+    "AISI 304L inox (NIST)": {
+      "tipo": "nist_poly",
+      "coef": [
+        -295.54,
+        -0.39811,
+        0.0092683,
+        -2.0261e-05,
+        1.7127e-08
+      ],
+      "escala": 1e-05,
+      "t_low": 23,
+      "f_low": -300.04,
+      "t_min": 4,
+      "t_max": 300,
+      "error_ajuste_pct": 5,
+      "fuente": "NIST Cryogenic Material Properties, 304L Stainless (UNS S30403), Linear Expansion [(L-L293)/L293]·1e5, rango 4-300 K, error de ajuste 5 % (mismos coeficientes que 304 y 316 en NIST).",
+      "verificado": true
+    },
+    "_PLANTILLA_tabla": {
+      "tipo": "tabla",
+      "T": [
+        100,
+        150,
+        200,
+        250,
+        293
+      ],
+      "dL_L": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "escala": 1e-05,
+      "fuente": "Sustituir por datos reales (fabricante, ensayo propio, otra fuente) y quitar el '_' del nombre",
+      "verificado": false
+    }
+  }
+}
