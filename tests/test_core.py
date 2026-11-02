@@ -78,11 +78,13 @@ def test_fixed_point_does_not_move():
 def test_read_zemax_example():
     surfs, info = core.read_zemax(EXAMPLE / "zemax_ejemplo.txt")
     assert info["reference_surface"] == 1
-    labels = [s.comment for s in surfs]
-    assert {"M1", "M2", "M3"} <= set(labels)
+    assert {"M1", "M2", "M3"} <= {s.comment for s in surfs}
     m3 = next(s for s in surfs if s.comment == "M3")
-    assert max_diff(m3.R, zemax_R(30, 40, -15)) < 1e-8
-    assert (m3.x, m3.y, m3.z) == pytest.approx((-180, -260, 320))
+    assert (m3.x, m3.y, m3.z) == pytest.approx((-300, -400, 250))
+    # R ortonormal y coherente con los ángulos Zemax impresos en el fichero
+    RtR = core._mm(core._tr(m3.R), m3.R)
+    assert max_diff(RtR, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]) < 1e-8
+    assert max_diff(zemax_R(m3.tilt_x, m3.tilt_y, m3.tilt_z), m3.R) < 1e-7
 
 
 # ---------------------------------------------------------------- FEM

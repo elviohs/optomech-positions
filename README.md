@@ -13,6 +13,7 @@ Herramienta para pasar las posiciones de un sistema óptico diseñado en **Zemax
 - Aplica la contracción térmica desde un punto fijo del banco y redondea cada elemento a su propia tolerancia de posicionado. Calcula el *back-calc* a frío y el residuo que introduce el redondeo.
 - Obtiene el factor térmico y el CTE a partir de curvas de dilatación (polinomios NIST o tablas propias) o de un valor introducido a mano.
 - Estudio de estabilidad: compara un fichero de temperaturas ANSYS de referencia (T0) con uno o varios casos y calcula el desplazamiento X-Y de cada elemento, en ejes globales y en los ejes locales de la superficie.
+- Vista 2D (planta, alzado o perfil) de los espejos con su normal y el rayo central, con comprobación automática de la ley de reflexión en cada espejo para detectar orientaciones, posiciones u offsets incorrectos.
 - Genera un Excel con las pestañas: Parámetros, Posiciones CREO, Zemax global, Estab \<caso\> y Avisos.
 - Cada sistema óptico se guarda como un perfil `.json` portable, con rutas relativas al perfil.
 
@@ -43,15 +44,29 @@ python cli.py ejemplos/sistema_3_espejos/ejemplo_3_espejos.json
 ### Dar de alta un sistema nuevo
 
 1. **Zemax.** Exporta *Analyze → Reports → Prescription Data* con las coordenadas globales activadas. Etiqueta (campo *Comment*) cada superficie que sea un elemento mecánico. Elige como superficie de referencia global la que coincida con el origen del modelo CREO.
-2. **Pestaña 1.** Carga el `.txt` y marca los elementos. Para cada uno puedes indicar:
+2. **Pestaña 1.** Carga el `.txt`. Las superficies que no te interesen se pueden quitar de la tabla: selecciónalas (Ctrl/Mayús + clic) y pulsa *Quitar seleccionados* o Supr. El perfil las recuerda al volver a leer el fichero, y *Restaurar quitados* las recupera. Para cada elemento puedes indicar:
    - Acrónimo y descripción.
-   - Tolerancia de posición y angular. Si se dejan vacías, se usan las de la pestaña 2.
+   - Tolerancia de posición y angular: selecciona uno o varios elementos, elige los valores en el panel *Tolerancia de posicionado de los seleccionados* y pulsa *Aplicar*. *Por defecto* vuelve a las de la pestaña 2.
    - *Offset* de posición: cuando la posición mecánica está en el *coordinate break* siguiente a la superficie.
    - *Override* de ángulos CREO: solo para casos de gimbal lock ya fijados en CREO. El programa avisa si el override cambia la orientación física.
    - Punto de muestreo FEM.
 3. **Pestaña 2.** Temperaturas de operación y de montaje, material o CTE, punto fijo del banco y tolerancias por defecto.
 4. **Pestaña 3** (opcional). Fichero ANSYS de referencia T0 y los casos a estudiar.
-5. **Guardar perfil** y **Calcular**. Revisa siempre la pestaña *Avisos* del Excel.
+5. **Pestaña 4, Vista 2D.** Revisa que el rayo central y las normales tengan sentido. Si algún espejo sale en rojo, comprueba su orientación, su posición o su offset antes de seguir. Detalles en el apartado *Vista 2D*.
+6. **Guardar perfil** y **Calcular**. El Excel se abre automáticamente al terminar; se puede desactivar con la casilla junto al botón. Revisa siempre la pestaña *Avisos*.
+
+### Vista 2D y comprobación del rayo central
+
+![Vista 2D](docs/img/vista2d.png)
+
+El rayo central se reconstruye uniendo el punto inicial, la posición de cada elemento incluido (con su offset) y el punto final. En cada elemento se compara la dirección real del rayo a la salida con la que predice la ley de reflexión a partir de su normal, que es el eje Z local de Zemax. El resultado de cada elemento es uno de estos estados:
+
+- **ok**: la reflexión es coherente.
+- **transmisión**: el rayo no cambia de dirección (lente, ventana, filtro).
+- **fuera de eje**: el elemento tiene offset de posición, es decir, su vértice no es el punto de impacto. La normal del vértice no sirve para comprobar la reflexión, así que no se comprueba.
+- **error**: hay que revisar el elemento.
+
+La reconstrucción supone que el rayo central pasa por la posición de cada elemento. En diseños donde no sea así, conviene comprobarlo con un trazado de rayo real en Zemax.
 
 ### Formato de los ficheros ANSYS
 
@@ -101,6 +116,7 @@ Se ejecutan automáticamente en GitHub Actions en cada *push*.
 
 ```
 core.py            motor de cálculo (sin interfaz)
+geometry.py        rayo central y comprobación de la ley de reflexión
 materials.py       curvas de dilatación ε(T), α(T)
 excel_out.py       generación del Excel
 gui.py             interfaz tkinter
