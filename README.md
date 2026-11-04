@@ -12,7 +12,9 @@ Herramienta para pasar las posiciones de un sistema óptico diseñado en **Zemax
 - Convierte la orientación de cada superficie de la convención de Zemax a ángulos CREO, incluido el caso de *gimbal lock* (ty = ±90°).
 - Aplica la contracción térmica desde un punto fijo del banco y redondea cada elemento a su propia tolerancia de posicionado. Calcula el *back-calc* a frío y el residuo que introduce el redondeo.
 - Obtiene el factor térmico y el CTE a partir de curvas de dilatación (polinomios NIST o tablas propias) o de un valor introducido a mano.
-- Estudio de estabilidad: compara un fichero de temperaturas ANSYS de referencia (T0) con uno o varios casos y calcula el desplazamiento X-Y de cada elemento, en ejes globales y en los ejes locales de la superficie.
+- Estudio de estabilidad con dos alternativas:
+  - **Temperaturas ANSYS**: modelo de primer orden en X-Y a partir de ΔT, dilatando desde el punto fijo del banco.
+  - **Desplazamientos termo-estructurales ANSYS**: para cada elemento se ajusta un movimiento de sólido rígido a los nodos cercanos y se obtienen dX, dY, dZ y los giros, incluido el brazo de palanca hasta el elemento. Se dan en ejes globales y en los ejes locales de la superficie, junto con los ángulos Zemax perturbados.
 - Vista 2D (planta, alzado o perfil) de los espejos con su normal y el rayo central, con comprobación automática de la ley de reflexión en cada espejo para detectar orientaciones, posiciones u offsets incorrectos.
 - Genera un Excel con las pestañas: Parámetros, Posiciones CREO, Zemax global, Estab \<caso\> y Avisos.
 - Cada sistema óptico se guarda como un perfil `.json` portable, con rutas relativas al perfil.
@@ -51,7 +53,7 @@ python cli.py ejemplos/sistema_3_espejos/ejemplo_3_espejos.json
    - *Override* de ángulos CREO: solo para casos de gimbal lock ya fijados en CREO. El programa avisa si el override cambia la orientación física.
    - Punto de muestreo FEM.
 3. **Pestaña 2.** Temperaturas de operación y de montaje, material o CTE, punto fijo del banco y tolerancias por defecto.
-4. **Pestaña 3** (opcional). Fichero ANSYS de referencia T0 y los casos a estudiar.
+4. **Pestaña 3** (opcional). Añade los casos de estabilidad. Para casos de temperaturas hace falta el fichero de referencia T0. Para casos de desplazamientos, la referencia es opcional: si la indicas, se usa la diferencia caso − referencia.
 5. **Pestaña 4, Vista 2D.** Revisa que el rayo central y las normales tengan sentido. Si algún espejo sale en rojo, comprueba su orientación, su posición o su offset antes de seguir. Detalles en el apartado *Vista 2D*.
 6. **Guardar perfil** y **Calcular**. El Excel se abre automáticamente al terminar; se puede desactivar con la casilla junto al botón. Revisa siempre la pestaña *Avisos*.
 
@@ -63,20 +65,42 @@ El rayo central se reconstruye uniendo el punto inicial, la posición de cada el
 
 - **ok**: la reflexión es coherente.
 - **transmisión**: el rayo no cambia de dirección (lente, ventana, filtro).
-- **fuera de eje**: el elemento tiene offset de posición, es decir, su vértice no es el punto de impacto. La normal del vértice no sirve para comprobar la reflexión, así que no se comprueba.
+- **fuera de eje**: el elemento tiene offset de posición, pero no se puede calcular la normal en el punto de impacto, porque la superficie no es cónica (tipo STANDARD) o porque el fichero no incluye la tabla *SURFACE DATA SUMMARY*.
 - **error**: hay que revisar el elemento.
+
+En los elementos fuera de eje (con offset de posición, como un paraboloide fuera de eje), el programa:
+1. Proyecta la posición mecánica sobre la superficie a lo largo de su eje Z local. Para ello usa el radio y la cónica de la tabla *SURFACE DATA SUMMARY* del prescription data.
+2. Calcula la normal en ese punto de impacto: z(r) = c·r² / (1 + √(1 − (1+k)c²r²)).
+3. Comprueba la reflexión con esa normal.
+
+La tabla muestra la distancia entre el punto de impacto y la posición usada para CREO (la sagita), y en el dibujo una × gris marca esa posición.
 
 La reconstrucción supone que el rayo central pasa por la posición de cada elemento. En diseños donde no sea así, conviene comprobarlo con un trazado de rayo real en Zemax.
 
 ### Formato de los ficheros ANSYS
 
-Texto delimitado por tabuladores, punto y coma o espacios, con decimal coma o punto:
+Todos son texto delimitado por tabuladores, punto y coma o espacios, con decimal coma o punto. Las unidades se leen de la cabecera: m, mm o µm (también escrito `um`).
 
+**Temperaturas**:
 ```
 Node Number   X Location (m)   Y Location (m)   Z Location (m)   Temperature (K)
 ```
 
-Las unidades (m o mm) se leen de la cabecera. Si la cabecera no cuadra con la extensión de la malla, el programa avisa y corrige.
+**Desplazamientos**, en un solo fichero:
+```
+Node Number   X Location (m)   Y Location (m)   Z Location (m)   UX (m)   UY (m)   UZ (m)
+```
+o en tres ficheros, uno por eje, con la quinta columna como desplazamiento. Es el formato de *Directional Deformation* exportado desde Mechanical. El eje se deduce de la cabecera o del nombre del fichero, por ejemplo `U_X.txt`, `U_Y.txt` y `U_Z.txt`.
+
+Si la cabecera de coordenadas no cuadra con la extensión de la malla, el programa avisa y corrige. Para restar una referencia, el caso y la referencia deben compartir la malla: se emparejan por número de nodo.
+
+### Estabilidad con desplazamientos: cómo se calcula
+
+Para cada elemento se toman los N nodos más cercanos al punto de muestreo:
+- Si el punto se da como `x;y`, o se deja vacío, la búsqueda es en X-Y, es decir, los nodos del banco bajo el elemento en todas sus capas.
+- Si se da como `x;y;z`, la búsqueda es en 3D, útil si el modelo incluye la montura.
+
+Con esos nodos se ajusta por mínimos cuadrados un movimiento de sólido rígido, u = t + θ × (p − c). El desplazamiento en el elemento se calcula como u_e = t + θ × (P_e − c), de modo que el giro de la base produce un desplazamiento lateral proporcional a la altura de la montura. El *residuo del ajuste* mide cuánto se aparta el entorno de un movimiento rígido; si es grande, el banco se está deformando localmente y conviene reducir N o muestrear en la interfaz de la montura.
 
 ## Convenciones
 
@@ -98,8 +122,8 @@ Para añadir un material, copia los coeficientes de la tabla *Linear Expansion* 
 
 ## Limitaciones
 
-- La estabilidad es un modelo de primer orden en X-Y: el banco se deforma libremente desde un punto fijo y el ΔT se promedia a lo largo de la trayectoria entre el punto fijo y el elemento.
-- No calcula tilts ni desplazamientos en Z. Para eso hay que usar los desplazamientos de un análisis termo-estructural.
+- Con temperaturas, la estabilidad es un modelo de primer orden en X-Y, sin dZ ni giros. Para esos efectos hay que usar los casos de desplazamientos.
+- Con desplazamientos, la montura se trata como rígida salvo que esté incluida en el modelo FEM y se muestree con `x;y;z`.
 - Supone un único banco de un solo material.
 - Los ficheros Zemax con multiconfiguración deben exportarse una configuración cada vez.
 

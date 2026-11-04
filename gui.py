@@ -38,6 +38,7 @@ PARAM_FIELDS = [
     ("cte_stab_ppm", "CTE a T operación (ppm/K)", float),
     ("fem_nodes", "Nodos FEM por punto", int),
     ("fem_warn_mm", "Aviso si nodo más cercano > (mm)", float),
+    ("disp_nodes", "Nodos para el ajuste de sólido rígido", int),
 ]
 
 COLS = [("include", "Incl.", 45), ("surf_id", "Sup.", 45), ("zemax_label", "Etiqueta Zemax", 130),
@@ -59,7 +60,8 @@ class App(tk.Tk):
         self.surfaces = []
         self.zemax_info = {}
         self.elements: list[core.ElementCfg] = []
-        self.fem_cases: list[tuple[str, str]] = []
+        self.fem_cases: list[tuple] = []        # (etiqueta, [ficheros], "temp" | "desp")
+        self.disp_ref: list[str] = []           # referencia de desplazamientos (opcional)
         self.removed: set[str] = set()          # elementos quitados de la tabla ("etiqueta|n")
         self.msgs = queue.Queue()
 
@@ -69,6 +71,8 @@ class App(tk.Tk):
         self.v_manual = tk.BooleanVar(value=False)
         self.v_backcalc = tk.StringVar(value="exacto")
         self.v_units = tk.StringVar(value="auto")
+        self.v_disp_units = tk.StringVar(value="auto")
+        self.v_disp_ref = tk.StringVar()
         self.v_model = tk.StringVar(value="trayectoria")
         self.v_t0 = tk.StringVar()
         self.v_case_label = tk.StringVar(value="T+1h")
@@ -184,8 +188,8 @@ class App(tk.Tk):
             "coordinate break siguiente).  "
             "Override: ángulos CREO forzados (solo casos ty=±90° verificados en CREO); "
             "el programa avisa si cambian la orientación física.\n"
-            "Punto FEM: punto X;Y donde muestrear la temperatura (p. ej. la pata de la montura). "
-            "Vacío = posición del vértice.")).pack(anchor="w")
+            "Punto FEM: x;y (o x;y;z si el modelo incluye la montura) donde muestrear temperaturas o "
+            "desplazamientos, p. ej. la pata de la montura. Vacío = posición del elemento.")).pack(anchor="w")
         return f
 
     def _tab_bench(self, parent):
@@ -241,39 +245,62 @@ class App(tk.Tk):
 
     def _tab_stab(self, parent):
         f = ttk.Frame(parent, padding=10)
-        g = ttk.LabelFrame(f, text="Ficheros de temperatura ANSYS (Nodo, X, Y, Z, T)", padding=8)
+        g = ttk.LabelFrame(f, text="Casos de estabilidad", padding=8)
         g.pack(fill="x")
-        r = ttk.Frame(g); r.pack(fill="x")
+        r2 = ttk.Frame(g); r2.pack(fill="x")
+        ttk.Label(r2, text="Nombre del caso").pack(side="left")
+        ttk.Entry(r2, textvariable=self.v_case_label, width=12).pack(side="left", padx=4)
+        ttk.Button(r2, text="Añadir caso de temperaturas…", command=self.add_case).pack(side="left")
+        ttk.Button(r2, text="Añadir caso de desplazamientos…", command=self.add_disp_case).pack(side="left", padx=4)
+        ttk.Button(r2, text="Quitar seleccionado", command=self.del_case).pack(side="left", padx=4)
+        self.lst_cases = tk.Listbox(g, height=5)
+        self.lst_cases.pack(fill="x", pady=(6, 0))
+
+        gt = ttk.LabelFrame(f, text="Temperaturas ANSYS (Nodo, X, Y, Z, T) — modelo de 1er orden en X-Y",
+                            padding=8)
+        gt.pack(fill="x", pady=(8, 0))
+        r = ttk.Frame(gt); r.pack(fill="x")
         ttk.Label(r, text="Referencia T0").pack(side="left")
         ttk.Entry(r, textvariable=self.v_t0, width=80).pack(side="left", padx=4, fill="x", expand=True)
         ttk.Button(r, text="…", width=3, command=lambda: self._pick_file(self.v_t0)).pack(side="left")
+        gtp = ttk.Frame(gt); gtp.pack(fill="x", pady=(6, 0))
+        self._param_rows(gtp, ["cte_stab_ppm", "fem_nodes"])
+        ttk.Label(gtp, text="Modelo").grid(row=2, column=0, sticky="w")
+        ttk.Combobox(gtp, textvariable=self.v_model, values=["trayectoria", "local"], width=12,
+                     state="readonly").grid(row=2, column=1, sticky="w")
+        ttk.Label(gtp, textvariable=self.v_stab_info, foreground="#1f4e9c").grid(
+            row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
-        r2 = ttk.Frame(g); r2.pack(fill="x", pady=6)
-        ttk.Label(r2, text="Nombre del caso").pack(side="left")
-        ttk.Entry(r2, textvariable=self.v_case_label, width=12).pack(side="left", padx=4)
-        ttk.Button(r2, text="Añadir fichero de caso…", command=self.add_case).pack(side="left")
-        ttk.Button(r2, text="Quitar seleccionado", command=self.del_case).pack(side="left", padx=4)
-        self.lst_cases = tk.Listbox(g, height=5)
-        self.lst_cases.pack(fill="x")
+        gd = ttk.LabelFrame(f, text="Desplazamientos termo-estructurales ANSYS (Nodo, X, Y, Z, UX, UY, UZ "
+                                    "— o 3 ficheros, uno por eje)", padding=8)
+        gd.pack(fill="x", pady=(8, 0))
+        rd = ttk.Frame(gd); rd.pack(fill="x")
+        ttk.Label(rd, text="Referencia (opcional)").pack(side="left")
+        ttk.Entry(rd, textvariable=self.v_disp_ref, width=70, state="readonly").pack(
+            side="left", padx=4, fill="x", expand=True)
+        ttk.Button(rd, text="…", width=3, command=self.pick_disp_ref).pack(side="left")
+        ttk.Button(rd, text="Quitar", command=lambda: self._set_disp_ref([])).pack(side="left", padx=4)
+        gdp = ttk.Frame(gd); gdp.pack(fill="x", pady=(6, 0))
+        self._param_rows(gdp, ["disp_nodes"])
+        ttk.Label(gdp, text="Unidades desplazamiento").grid(row=1, column=0, sticky="w")
+        ttk.Combobox(gdp, textvariable=self.v_disp_units, values=["auto", "m", "mm", "um"], width=10,
+                     state="readonly").grid(row=1, column=1, sticky="w")
 
-        g2 = ttk.LabelFrame(f, text="Modelo", padding=8)
-        g2.pack(fill="x", pady=8)
-        ttk.Label(g2, textvariable=self.v_stab_info, foreground="#1f4e9c").grid(
-            row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        self._param_rows(g2, ["cte_stab_ppm", "fem_nodes", "fem_warn_mm"])
-        ttk.Label(g2, text="Unidades coordenadas FEM").grid(row=3, column=0, sticky="w")
-        ttk.Combobox(g2, textvariable=self.v_units, values=["auto", "mm", "m"], width=10,
-                     state="readonly").grid(row=3, column=1, sticky="w")
-        ttk.Label(g2, text="Modelo de desplazamiento").grid(row=4, column=0, sticky="w")
-        ttk.Combobox(g2, textvariable=self.v_model, values=["trayectoria", "local"], width=12,
-                     state="readonly").grid(row=4, column=1, sticky="w")
-        ttk.Label(f, foreground="#555", justify="left", wraplength=1050, text=(
-            "trayectoria: ΔT medio a lo largo del segmento punto fijo → elemento (aproxima α∫ΔT·ds). "
-            "local: ΔT en el elemento × distancia al punto fijo (solo válido si ΔT es uniforme).\n"
-            "Ambos son aproximaciones de primer orden en X-Y. Para tilts y desplazamientos en Z, lo "
-            "correcto es exportar los desplazamientos de un análisis termo-estructural de ANSYS.\n"
-            "El CTE de estabilidad debe ser el instantáneo a la temperatura de operación, no el medio "
-            "entre 130 K y 293 K.")).pack(anchor="w")
+        gc = ttk.LabelFrame(f, text="Común", padding=8)
+        gc.pack(fill="x", pady=(8, 0))
+        self._param_rows(gc, ["fem_warn_mm"])
+        ttk.Label(gc, text="Unidades coordenadas FEM").grid(row=1, column=0, sticky="w")
+        ttk.Combobox(gc, textvariable=self.v_units, values=["auto", "mm", "m"], width=10,
+                     state="readonly").grid(row=1, column=1, sticky="w")
+
+        ttk.Label(f, foreground="#555", justify="left", wraplength=1100, text=(
+            "Temperaturas: desplazamiento X-Y aproximado desde el punto fijo del banco (sin dZ ni giros); "
+            "'trayectoria' promedia ΔT entre el punto fijo y el elemento.\n"
+            "Desplazamientos: para cada elemento se ajusta un movimiento de sólido rígido a los N nodos más "
+            "cercanos al punto FEM (x;y o x;y;z) y se traslada al elemento con su brazo de palanca. Da dX, dY, "
+            "dZ y giros, en ejes globales y locales. Si se indica una referencia, se usa la diferencia caso − "
+            "referencia (p. ej. T+1h − T0); sin referencia, el desplazamiento es absoluto respecto al modelo "
+            "sin deformar.")).pack(anchor="w", pady=(6, 0))
         return f
 
     def _param_rows(self, parent, keys):
@@ -289,6 +316,7 @@ class App(tk.Tk):
         self.v_manual.set(prm.use_manual_factor)
         self.v_backcalc.set(prm.backcalc_mode)
         self.v_units.set(prm.fem_units)
+        self.v_disp_units.set(prm.disp_units)
         self.v_model.set(prm.fem_model)
         self.v_ignore.set(prm.ignore_labels)
         self.v_material.set(prm.material or MANUAL_MAT)
@@ -306,6 +334,7 @@ class App(tk.Tk):
         mat = self.v_material.get()
         return core.Params(use_manual_factor=self.v_manual.get(), backcalc_mode=self.v_backcalc.get(),
                            fem_units=self.v_units.get(), fem_model=self.v_model.get(),
+                           disp_units=self.v_disp_units.get(),
                            material="" if mat == MANUAL_MAT else mat,
                            mat_for_conversion=self.v_mat_conv.get(),
                            mat_for_stability=self.v_mat_stab.get(),
@@ -502,13 +531,40 @@ class App(tk.Tk):
 
     # ---------------------------------------------------------------- FEM
     def add_case(self):
-        p = filedialog.askopenfilename(title="Fichero de temperatura ANSYS",
+        p = filedialog.askopenfilename(title="Fichero de temperaturas ANSYS",
                                        filetypes=[("Texto", "*.txt *.csv"), ("Todos", "*.*")])
         if not p:
             return
         label = self.v_case_label.get().strip() or f"Caso {len(self.fem_cases) + 1}"
-        self.fem_cases.append((label, p))
+        self.fem_cases.append((label, [p], "temp"))
         self._refresh_cases()
+
+    def _ask_disp_files(self, title):
+        ps = filedialog.askopenfilenames(title=title, filetypes=[("Texto", "*.txt *.csv"), ("Todos", "*.*")])
+        if not ps:
+            return None
+        if len(ps) not in (1, 3):
+            messagebox.showerror("Desplazamientos", "Selecciona 1 fichero (UX, UY, UZ) o 3 ficheros "
+                                 "(uno por eje, con X/Y/Z en el nombre).")
+            return None
+        return list(ps)
+
+    def add_disp_case(self):
+        ps = self._ask_disp_files("Desplazamientos ANSYS: 1 fichero (UX,UY,UZ) o 3 ficheros (uno por eje)")
+        if not ps:
+            return
+        label = self.v_case_label.get().strip() or f"Caso {len(self.fem_cases) + 1}"
+        self.fem_cases.append((label, ps, "desp"))
+        self._refresh_cases()
+
+    def pick_disp_ref(self):
+        ps = self._ask_disp_files("Desplazamientos de referencia (p. ej. T0)")
+        if ps:
+            self._set_disp_ref(ps)
+
+    def _set_disp_ref(self, files):
+        self.disp_ref = list(files)
+        self.v_disp_ref.set("; ".join(Path(p).name for p in self.disp_ref))
 
     def del_case(self):
         sel = self.lst_cases.curselection()
@@ -518,8 +574,9 @@ class App(tk.Tk):
 
     def _refresh_cases(self):
         self.lst_cases.delete(0, "end")
-        for l, p in self.fem_cases:
-            self.lst_cases.insert("end", f"{l}  —  {p}")
+        for l, fs, k in self.fem_cases:
+            tipo = "temperaturas" if k == "temp" else "desplazamientos"
+            self.lst_cases.insert("end", f"{l}  [{tipo}]  —  {'; '.join(Path(p).name for p in fs)}")
 
     def _key(self, e) -> str:
         """Identificador estable: etiqueta + nº de aparición de esa etiqueta en el fichero Zemax."""
@@ -609,6 +666,7 @@ class App(tk.Tk):
             return
         self._set_params(core.Params())
         self.elements, self.surfaces, self.fem_cases = [], [], []
+        self._set_disp_ref([])
         self.removed = set()
         self._update_restore_btn()
         self.v_zemax.set(""); self.v_t0.set("")
@@ -625,7 +683,7 @@ class App(tk.Tk):
             return
         d = core.profile_to_dict(self.v_zemax.get(), prm, self.elements, self.v_t0.get(),
                                  self.fem_cases, self.v_out_dir.get(), self.v_out_name.get(),
-                                 base=Path(p).parent)
+                                 base=Path(p).parent, disp_ref=self.disp_ref)
         d["removed"] = sorted(self.removed)
         d["open_excel"] = self.v_open_excel.get()
         Path(p).write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -637,7 +695,7 @@ class App(tk.Tk):
             return
         try:
             d = json.loads(Path(p).read_text(encoding="utf-8"))
-            zf, prm, els, t0, cases, od, on = core.profile_from_dict(d, base=Path(p).parent)
+            zf, prm, els, t0, cases, od, on, dref = core.profile_from_dict(d, base=Path(p).parent)
         except Exception as e:
             messagebox.showerror("Perfil", f"No se pudo leer el perfil:\n{e}"); return
         self._set_params(prm)
@@ -646,11 +704,14 @@ class App(tk.Tk):
         self.v_open_excel.set(d.get("open_excel", True))
         self.v_zemax.set(zf); self.v_t0.set(t0)
         self.fem_cases = cases; self._refresh_cases()
+        self._set_disp_ref(dref)
         if od: self.v_out_dir.set(od)
         if on: self.v_out_name.set(on)
         self._update_factor()
         self._log(f"Perfil cargado: {p}", "ok")
-        for label, fp in [("T0", t0)] + list(cases):
+        checks = [("T0", t0)] + [("referencia desplazamientos", f) for f in dref] + \
+                 [(l, f) for l, fs, _ in cases for f in fs]
+        for label, fp in checks:
             if fp and not Path(fp).exists():
                 self._log(f"[AVISO] No se encuentra el fichero FEM '{label}': {fp}", "warn")
         if zf and Path(zf).exists():
@@ -673,10 +734,10 @@ class App(tk.Tk):
             out = out.with_suffix(".xlsx")
         self.btn_run.state(["disabled"])
         args = (prm, list(self.elements), self.v_t0.get().strip(), list(self.fem_cases), out,
-                self.v_zemax.get(), self.v_open_excel.get())
+                self.v_zemax.get(), self.v_open_excel.get(), list(self.disp_ref))
         threading.Thread(target=self._worker, args=args, daemon=True).start()
 
-    def _worker(self, prm, elements, t0, cases, out, zemax_path, open_excel=False):
+    def _worker(self, prm, elements, t0, cases, out, zemax_path, open_excel=False, disp_ref=()):
         warnings = []
 
         def log(m):
@@ -698,27 +759,25 @@ class App(tk.Tk):
 
             stability = []
             if cases:
-                if not t0:
-                    log("[ERROR] Hay casos FEM pero falta el fichero de referencia T0.")
-                else:
-                    log("Leyendo ficheros FEM…")
-                    fem0 = core.read_fem(t0, prm.fem_units, log)
-                    for label, fpath in cases:
-                        if not Path(fpath).exists():
-                            log(f"[AVISO] Caso '{label}': no existe {fpath}. Se omite.")
-                            continue
-                        fem1 = core.read_fem(fpath, prm.fem_units, log)
-                        grid = core.build_dT_grid(fem0, fem1, prm, log)
-                        st = core.compute_stability(results, grid, prm, log)
-                        stability.append((label, st))
-                        log(f"--- {label}: {'Acr.':6s} {'ΔT ef.(K)':>9s} {'dX (µm)':>9s} {'dY (µm)':>9s} "
+                log("Leyendo ficheros FEM…")
+                stability = core.run_stability(results, prm, t0, cases, disp_ref, log)
+                for label, st in stability:
+                    if st and st[0].kind == "temp":
+                        log(f"--- {label} [temperaturas]: {'ΔT ef.(K)':>9s} {'dX (µm)':>9s} {'dY (µm)':>9s} "
                             f"{'dist.mín':>8s}")
-                        for s in st:
-                            log(f"    {s.acronym:12s} {s.mean_dT:9.4f} {s.dX * 1e3:9.2f} {s.dY * 1e3:9.2f} "
-                                f"{s.min_dist:8.1f}")
+                        for x in st:
+                            log(f"    {x.acronym:10s} {x.mean_dT:9.4f} {x.dX * 1e3:9.2f} {x.dY * 1e3:9.2f} "
+                                f"{x.min_dist:8.1f}")
+                    else:
+                        log(f"--- {label} [desplazamientos]: {'dX':>8s} {'dY':>8s} {'dZ':>8s} (µm) | "
+                            f"{'θx':>7s} {'θy':>7s} {'θz':>7s} (µrad) | residuo (µm)")
+                        for x in st:
+                            log(f"    {x.acronym:10s} {x.dX * 1e3:8.2f} {x.dY * 1e3:8.2f} {x.dZ * 1e3:8.2f} | "
+                                f"{x.rot[0] * 1e6:7.2f} {x.rot[1] * 1e6:7.2f} {x.rot[2] * 1e6:7.2f} | "
+                                f"{x.fit_rms_um:.3f}")
 
             path = excel_out.write_workbook(out, zemax_path, self.zemax_info, prm, results,
-                                            stability, warnings, t0, cases)
+                                            stability, warnings, t0, cases, disp_ref)
             log(f"[OK] Excel generado: {path}")
             if open_excel:
                 self.msgs.put(("__open__", str(path)))
@@ -762,9 +821,10 @@ class App(tk.Tk):
         pw.pack(fill="both", expand=True, pady=4)
         self.canvas = tk.Canvas(pw, bg="white", highlightthickness=1, highlightbackground="#bbb", height=430)
         pw.add(self.canvas, weight=4)
-        cols = [("name", "Elemento", 90), ("status", "Estado", 100), ("aoi", "AOI (°)", 80),
-                ("defl", "Desviación (°)", 95), ("err", "Error reflexión (°)", 115),
-                ("x", "X (mm)", 90), ("y", "Y (mm)", 90), ("z", "Z (mm)", 90)]
+        cols = [("name", "Elemento", 80), ("status", "Estado", 90), ("nsrc", "Normal", 110),
+                ("aoi", "AOI (°)", 75), ("defl", "Desviación (°)", 90), ("err", "Error refl. (°)", 100),
+                ("off", "Δ impacto (mm)", 110), ("x", "X impacto", 85), ("y", "Y impacto", 85),
+                ("z", "Z impacto", 85)]
         self.geo_tree = ttk.Treeview(pw, columns=[c for c, _, _ in cols], show="headings", height=4)
         for c, t, w in cols:
             self.geo_tree.heading(c, text=t)
@@ -775,9 +835,10 @@ class App(tk.Tk):
         pw.add(self.geo_tree, weight=1)
 
         ttk.Label(f, foreground="#555", justify="left", wraplength=1120, text=(
-            "Rayo central (naranja) = une punto inicial, posición de cada elemento (con offset) y punto final. "
-            "Se comprueba la ley de reflexión con la normal de cada espejo. Verde: correcto · azul: transmisión · "
-            "naranja: fuera de eje (no comprobable) · rojo: revisar.")).pack(anchor="w")
+            "Rayo central (naranja): punto inicial → punto de impacto en cada elemento → punto final. En "
+            "elementos fuera de eje (con offset) el impacto y la normal se calculan sobre la cónica; la × gris "
+            "marca la posición usada para CREO. Verde: correcto · azul: transmisión · naranja: fuera de eje no "
+            "comprobable · rojo: revisar.")).pack(anchor="w")
 
         self._view = {"scale": None, "ox": 0.0, "oy": 0.0, "drag": None}
         self.canvas.bind("<Configure>", lambda e: self.refresh_view())
@@ -874,6 +935,11 @@ class App(tk.Tk):
         self._screen_nodes = []
         for nd, (sx, sy) in zip(nodes, pts):
             col = self.STATUS_COLORS.get(nd.status, "#333")
+            if nd.p_creo is not None:
+                cx, cy = T(nd.p_creo[a], nd.p_creo[b])
+                cv.create_line(sx, sy, cx, cy, fill="#999", dash=(2, 2))
+                cv.create_line(cx - 4, cy - 4, cx + 4, cy + 4, fill="#777")
+                cv.create_line(cx - 4, cy + 4, cx + 4, cy - 4, fill="#777")
             if not nd.is_element or nd.normal is None:
                 cv.create_oval(sx - 4, sy - 4, sx + 4, sy + 4, outline="#333", width=2, fill="white")
             else:
@@ -900,8 +966,9 @@ class App(tk.Tk):
             if nd.is_element:
                 fmt = lambda v: "" if v is None else f"{v:.4f}"
                 self.geo_tree.insert("", "end", tags=(nd.status,), values=(
-                    nd.name, nd.status, fmt(nd.aoi_deg), fmt(nd.defl_deg), fmt(nd.err_deg),
-                    f"{nd.p[0]:.3f}", f"{nd.p[1]:.3f}", f"{nd.p[2]:.3f}"))
+                    nd.name, nd.status, nd.normal_src, fmt(nd.aoi_deg), fmt(nd.defl_deg), fmt(nd.err_deg),
+                    f"{nd.hit_offset_mm:.3f}" if nd.p_creo else "", f"{nd.p[0]:.3f}", f"{nd.p[1]:.3f}",
+                    f"{nd.p[2]:.3f}"))
 
     def _hover(self, e):
         if not self._screen_nodes or not hasattr(self, "_hover_item"):
@@ -915,9 +982,13 @@ class App(tk.Tk):
         for nd in here:
             txt = f"{nd.name}: X={nd.p[0]:.3f}  Y={nd.p[1]:.3f}  Z={nd.p[2]:.3f}"
             if nd.is_element:
-                txt += f"  [{nd.status}]"
+                txt += f"  [{nd.status}]  normal: {nd.normal_src}"
                 if nd.aoi_deg is not None:
                     txt += f"  AOI={nd.aoi_deg:.3f}°  error={nd.err_deg:.4f}°"
+                if nd.p_creo is not None:
+                    txt += f"  impacto a {nd.hit_offset_mm:.3f} mm de la posición CREO (×)"
+                if nd.note:
+                    txt += f"  ({nd.note})"
             lines.append(txt)
         self.canvas.itemconfigure(self._hover_item, text="\n".join(lines))
 

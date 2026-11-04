@@ -13,8 +13,13 @@
 #   "ok"          reflexión coherente (error < tolerancia)
 #   "transmisión" el rayo no cambia de dirección (lente, ventana, filtro…)
 #   "error"       ni reflexión ni transmisión: revisar ángulos, posición u orden
-#   "fuera de eje" el elemento usa offset de posición (vértice ≠ punto de impacto):
-#                 la normal del vértice no sirve para comprobar la reflexión
+#   "fuera de eje" elemento con offset de posición cuya superficie no permite calcular la
+#                 normal en el punto de impacto (tipo no soportado o sin radio/cónica)
+#
+# Elementos fuera de eje (offset de posición > 0): el punto de impacto se obtiene
+# proyectando la posición mecánica sobre la superficie según su eje Z local, y la normal
+# se calcula en ese punto a partir del radio y la cónica (superficies STANDARD):
+#     z(r) = c·r² / (1 + √(1 − (1+k)·c²·r²)),   dz/dr = c·r / √(1 − (1+k)·c²·r²)
 #   "extremo"     primer/último punto del trazado
 # =============================================================================
 from __future__ import annotations
@@ -36,6 +41,10 @@ class PathNode:
     err_deg: float | None = None  # error respecto a la ley de reflexión
     defl_deg: float | None = None # desviación total del rayo
     z_label: str = ""
+    normal_src: str = "vértice"   # "vértice" | "impacto (cónica)" | "vértice (no válida)"
+    p_creo: tuple | None = None   # posición mecánica usada en CREO (si difiere del impacto)
+    hit_offset_mm: float = 0.0    # distancia entre el punto de impacto y la posición CREO
+    note: str = ""
 
 
 def _sub(a, b):
@@ -53,6 +62,41 @@ def _norm(v):
 
 def _ang(a, b):
     return math.degrees(math.acos(max(-1.0, min(1.0, _dot(a, b)))))
+
+
+def hit_on_surface(s, ps):
+    """Punto de impacto y normal en una superficie cónica (tipo STANDARD).
+
+    s: superficie etiquetada (vértice, R, radio, cónica); ps: superficie de posición (offset).
+    Devuelve (punto, normal, sagita) en coordenadas globales, o (None, motivo, None).
+    """
+    if s.radius is None and not s.surf_type:
+        return None, "el fichero no incluye la tabla SURFACE DATA SUMMARY (radio y cónica)", None
+    if s.surf_type != "STANDARD" or s.radius is None:
+        return None, f"superficie tipo {s.surf_type or 'desconocido'}: solo se calcula la normal en " \
+                     f"superficies cónicas (STANDARD)", None
+    R = s.R
+    V = (s.x, s.y, s.z)
+    d = _sub((ps.x, ps.y, ps.z), V)
+    x0 = sum(R[i][0] * d[i] for i in range(3))          # coordenadas locales (Rᵀ·d)
+    y0 = sum(R[i][1] * d[i] for i in range(3))
+    c = 0.0 if math.isinf(s.radius) or s.radius == 0 else 1.0 / s.radius
+    k = s.conic
+    r2 = x0 * x0 + y0 * y0
+    arg = 1.0 - (1.0 + k) * c * c * r2
+    if arg <= 0:
+        return None, "punto fuera del dominio de la cónica", None
+    sag = c * r2 / (1.0 + math.sqrt(arg))
+    r = math.sqrt(r2)
+    if r < 1e-12:
+        nl = (0.0, 0.0, 1.0)
+    else:
+        dzdr = c * r / math.sqrt(arg)
+        nl = _norm((-dzdr * x0 / r, -dzdr * y0 / r, 1.0))
+    loc = (x0, y0, sag)
+    hit = tuple(V[i] + sum(R[i][j] * loc[j] for j in range(3)) for i in range(3))
+    n = tuple(sum(R[i][j] * nl[j] for j in range(3)) for i in range(3))
+    return hit, _norm(n), sag
 
 
 def _finite(s):
@@ -94,7 +138,18 @@ def build_path(surfaces, elements, tol_deg: float = 0.05, ignore=None):
         n = (s.R[0][2], s.R[1][2], s.R[2][2])
         node = PathNode(e.acronym, (ps.x, ps.y, ps.z), _norm(n), True, "")
         if e.pos_offset:
-            node.status = "fuera de eje"
+            hit, n_hit, sag = hit_on_surface(s, ps)
+            if hit is None:
+                node.status = "fuera de eje"
+                node.normal_src = "vértice (no válida)"
+                node.note = n_hit
+            else:
+                node.p_creo = (ps.x, ps.y, ps.z)
+                node.p = hit
+                node.normal = n_hit
+                node.normal_src = "impacto (cónica)"
+                node.hit_offset_mm = math.dist(hit, node.p_creo)
+                node.note = f"sagita {sag:.4f} mm"
         nodes.append(node)
 
     # Punto final: última superficie finita después del último elemento
@@ -127,6 +182,7 @@ def build_path(surfaces, elements, tol_deg: float = 0.05, ignore=None):
             refl = tuple(d_in[i] - 2 * _dot(d_in, n) * n[i] for i in range(3))
             nd.err_deg = _ang(refl, d_out)
         if nd.status == "fuera de eje":
+            warnings.append(f"{nd.name}: elemento fuera de eje no comprobable ({nd.note}).")
             continue
         if nd.defl_deg < tol_deg:
             nd.status = "transmisión"

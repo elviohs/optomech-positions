@@ -128,16 +128,15 @@ def test_example_profile_end_to_end(tmp_path):
     openpyxl = pytest.importorskip("openpyxl")
     import excel_out
     d = json.loads((EXAMPLE / "ejemplo_3_espejos.json").read_text(encoding="utf-8"))
-    zf, prm, els, t0, cases, _, _ = core.profile_from_dict(d, base=EXAMPLE)
+    zf, prm, els, t0, cases, _, _, dref = core.profile_from_dict(d, base=EXAMPLE)
     surfs, info = core.read_zemax(zf)
     res = core.compute_positions(surfs, els, prm, log=lambda m: None)
     assert [r.cfg.acronym for r in res] == ["M1", "M2", "M3"]
-    f0 = core.read_fem(t0, log=lambda m: None)
-    stab = [(l, core.compute_stability(res, core.build_dT_grid(f0, core.read_fem(f, log=lambda m: None),
-                                                               prm, lambda m: None), prm, lambda m: None))
-            for l, f in cases]
-    out = excel_out.write_workbook(tmp_path / "r.xlsx", zf, info, prm, res, stab, [], t0, cases)
+    stab = core.run_stability(res, prm, t0, cases, dref, log=lambda m: None)
+    out = excel_out.write_workbook(tmp_path / "r.xlsx", zf, info, prm, res, stab, [], t0, cases, dref)
     wb = openpyxl.load_workbook(out)
-    assert wb.sheetnames == ["Parametros", "Posiciones CREO", "Zemax global", "Estab T+1h", "Avisos"]
-    for s in stab[0][1]:
-        assert s.min_dist < 20
+    assert wb.sheetnames == ["Parametros", "Posiciones CREO", "Zemax global", "Estab T+1h",
+                             "Estab T+1h desp", "Avisos"]
+    for _, st in stab:
+        for s in st:
+            assert s.min_dist < 20

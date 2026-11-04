@@ -51,3 +51,65 @@ def test_transmissive_element():
     els.append(core.ElementCfg(surf_id=5, zemax_label="Pupila", acronym="PUP", include=True))
     nodes, _ = geometry.build_path(surfs, els, ignore=core.parse_ignore(prm.ignore_labels))
     assert next(n for n in nodes if n.name == "PUP").status == "transmisión"
+
+
+# ---------------------------------------------------------------- espejos fuera de eje
+def _surf(sid, comment, p, R=None, **kw):
+    R = R or [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    return core.Surface(sid, comment, R, p[0], p[1], p[2], 0.0, 0.0, 0.0, **kw)
+
+
+def _oap(radius_known=True, surf_type="STANDARD"):
+    """Paraboloide fuera de eje: rayo paralelo al eje en x = h que refleja hacia el foco."""
+    f, h = 500.0, 120.0
+    hit = (h, 0.0, h * h / (4 * f))                     # z = r² / (4f)  (R = 2f, k = -1)
+    surfs = [_surf(1, "Inicio", (h, 0.0, 1000.0)),
+             _surf(2, "OAP", (0.0, 0.0, 0.0), surf_type=surf_type,
+                   radius=2 * f if radius_known else None, conic=-1.0, glass="MIRROR"),
+             _surf(3, "", (h, 0.0, 0.0)),                 # coordinate break en el plano del vértice
+             _surf(4, "Foco", (0.0, 0.0, f))]
+    els = [core.ElementCfg(surf_id=2, zemax_label="OAP", acronym="OAP", pos_offset=1)]
+    return surfs, els, hit
+
+
+def test_off_axis_paraboloid_checked_at_hit_point():
+    surfs, els, hit = _oap()
+    nodes, warns = geometry.build_path(surfs, els)
+    n = next(x for x in nodes if x.name == "OAP")
+    assert n.status == "ok" and n.normal_src.startswith("impacto")
+    assert n.err_deg < 1e-9
+    assert n.p == pytest.approx(hit)
+    assert n.hit_offset_mm == pytest.approx(hit[2])     # sagita
+    assert not warns
+
+
+def test_off_axis_without_surface_data_not_checkable():
+    surfs, els, _ = _oap(radius_known=False, surf_type="")
+    nodes, warns = geometry.build_path(surfs, els)
+    assert next(x for x in nodes if x.name == "OAP").status == "fuera de eje"
+    assert any("SURFACE DATA SUMMARY" in w for w in warns)
+
+
+def test_off_axis_unsupported_type():
+    surfs, els, _ = _oap(surf_type="TOROIDAL")
+    nodes, warns = geometry.build_path(surfs, els)
+    assert next(x for x in nodes if x.name == "OAP").status == "fuera de eje"
+
+
+def test_summary_table_parsed(tmp_path):
+    txt = "\r\n".join([
+        "SURFACE DATA SUMMARY:", "",
+        "Surf\tType\tRadius\tThickness\tGlass\tClear Diam\tChip Zone\tMech Diam\tConic\tComment",
+        " OBJ\t STANDARD\t Infinity\t 100\t \t 10\t 0\t 10\t 0\t Obj",
+        "   1\t STANDARD\t 1599,175\t 0\t MIRROR\t 261\t 0\t 130\t -1\t M",
+        "", "GLOBAL VERTEX COORDINATES, ORIENTATIONS, AND ROTATION/OFFSET MATRICES:", "",
+        "  0\t 1,0\t 0,0\t 0,0\t 0,0\t 0,0\tObj", "   \t 0,0\t 1,0\t 0,0\t 0,0\t 0,0", "   \t 0,0\t 0,0\t 1,0\t 0,0\t 0,0", "",
+        "  1\t 1,0\t 0,0\t 0,0\t 0,0\t 0,0\tM", "   \t 0,0\t 1,0\t 0,0\t 0,0\t 0,0", "   \t 0,0\t 0,0\t 1,0\t 100,0\t 0,0", "",
+        "GLOBAL SURFACE CENTER OF CURVATURE POINTS:"])
+    f = tmp_path / "z.txt"
+    f.write_text(txt, encoding="utf-16")
+    surfs, info = core.read_zemax(f)
+    assert info["summary"]
+    m = next(s for s in surfs if s.comment == "M")
+    assert (m.surf_type, m.radius, m.conic, m.glass) == ("STANDARD", pytest.approx(1599.175), -1.0, "MIRROR")
+    assert surfs[0].radius == float("inf")

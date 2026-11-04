@@ -49,6 +49,10 @@ class Surface:
     tilt_x: float      # ángulos Zemax tal como los imprime el fichero
     tilt_y: float
     tilt_z: float
+    surf_type: str = ""            # de "SURFACE DATA SUMMARY" (STANDARD, TOROIDAL, COORDBRK…)
+    radius: float | None = None    # radio de curvatura (mm); math.inf si es plana; None si se desconoce
+    conic: float = 0.0
+    glass: str = ""
 
 
 @dataclass
@@ -86,6 +90,8 @@ class Params:
     fem_nodes: int = 5
     fem_model: str = "trayectoria"   # "local" | "trayectoria"
     fem_warn_mm: float = 50.0
+    disp_nodes: int = 12             # nodos para el ajuste de sólido rígido (desplazamientos)
+    disp_units: str = "auto"         # unidades de desplazamiento: auto | m | mm | um
     # Material (curva NIST / tabla en materiales.json)
     material: str = ""               # vacío = usar los CTE introducidos a mano
     mat_for_conversion: bool = False # usar la curva para el factor frío<->caliente
@@ -166,7 +172,7 @@ class StabilityResult:
     acronym: str
     sample_x: float
     sample_y: float
-    mean_dT: float
+    mean_dT: float | None          # None en casos de desplazamientos
     n_nodes: int
     min_dist: float
     dX: float
@@ -174,6 +180,12 @@ class StabilityResult:
     dX_loc: float
     dY_loc: float
     dZ_loc: float
+    dZ: float = 0.0
+    kind: str = "temp"             # "temp" (temperaturas) | "desp" (desplazamientos ANSYS)
+    rot: tuple | None = None       # giro global (rad) — solo "desp"
+    rot_loc: tuple | None = None   # giro en ejes locales de la superficie (rad)
+    d_tilt_zemax: tuple = (0.0, 0.0, 0.0)   # variación de los ángulos Zemax (°)
+    fit_rms_um: float | None = None          # residuo del ajuste de sólido rígido
 
 
 # -----------------------------------------------------------------------------
@@ -316,7 +328,56 @@ def read_zemax(path) -> tuple[list[Surface], dict]:
         i += 3
     if not surfaces:
         raise ValueError("La sección de coordenadas globales está vacía o tiene un formato no reconocido.")
+    _attach_summary(lines, surfaces, info)
     return surfaces, info
+
+
+def _attach_summary(lines, surfaces, info):
+    """Añade tipo, radio, cónica y vidrio desde 'SURFACE DATA SUMMARY' (si existe)."""
+    start = next((i for i, ln in enumerate(lines) if "SURFACE DATA SUMMARY" in ln.upper()), None)
+    if start is None:
+        info["summary"] = False
+        return
+    hdr_i = next((i for i in range(start + 1, min(start + 6, len(lines)))
+                  if "radius" in lines[i].lower() and "conic" in lines[i].lower()), None)
+    if hdr_i is None:
+        info["summary"] = False
+        return
+    cols = [c.strip().lower() for c in lines[hdr_i].split("\t")]
+    def col(name):
+        return next((j for j, c in enumerate(cols) if c.startswith(name)), None)
+    jt, jr, jg, jc = col("type"), col("radius"), col("glass"), col("conic")
+    by_id = {sf.surf_id: sf for sf in surfaces}
+    n = 0
+    for ln in lines[hdr_i + 1:]:
+        if not ln.strip():
+            break
+        p = [c.strip() for c in ln.split("\t")]
+        if len(p) < len(cols) - 1:
+            break
+        sid = n            # OBJ = 0, STO y el resto en orden
+        n += 1
+        sf = by_id.get(sid)
+        if sf is None:
+            continue
+        sf.surf_type = p[jt].upper() if jt is not None else ""
+        if jr is not None:
+            r = p[jr]
+            if r.lower().startswith("inf"):
+                sf.radius = math.inf
+            else:
+                try:
+                    sf.radius = _f(r)
+                except ValueError:
+                    sf.radius = None
+        if jc is not None:
+            try:
+                sf.conic = _f(p[jc])
+            except ValueError:
+                sf.conic = 0.0
+        if jg is not None:
+            sf.glass = p[jg].upper()
+    info["summary"] = True
 
 
 def parse_ignore(text: str) -> set:
@@ -587,7 +648,302 @@ def compute_stability(results: list[ElementResult], grid: _Grid, prm: Params,
         d = (dX, dY, 0.0)
         dl = [sum(R[i][j] * d[i] for i in range(3)) for j in range(3)]
         out.append(StabilityResult(cfg.acronym, sx, sy, eff_dT, len(best), dmin,
-                                   dX, dY, dl[0], dl[1], dl[2]))
+                                   dX, dY, dl[0], dl[1], dl[2], kind="temp"))
+    return out
+
+
+# -----------------------------------------------------------------------------
+# Estabilidad: desplazamientos termo-estructurales de ANSYS
+# -----------------------------------------------------------------------------
+# Formatos admitidos (texto, tabulador/; /espacios, decimal coma o punto):
+#   a) un fichero:  Nodo, X, Y, Z, UX, UY, UZ
+#   b) tres ficheros, uno por dirección: Nodo, X, Y, Z, U  (p. ej. "Directional
+#      Deformation" exportado desde Mechanical para los ejes X, Y y Z)
+# Las unidades se leen de la cabecera: "(m)", "(mm)" o "(um)/(µm)".
+#
+# Para cada elemento se toman los N nodos más cercanos (en 3D) al punto de muestreo
+# y se ajusta un movimiento de sólido rígido u_i = t + θ × (p_i - c). El
+# desplazamiento en la posición del elemento incluye el brazo de palanca:
+#     u_e = t + θ × (P_e - c)
+# y el giro θ se aplica a la orientación: R' = Rot(θ)·R.
+# -----------------------------------------------------------------------------
+
+_UNIT_MM = {"m": 1000.0, "meter": 1000.0, "metre": 1000.0, "mm": 1.0,
+            "um": 1e-3, "µm": 1e-3, "μm": 1e-3, "micron": 1e-3}
+
+
+@dataclass
+class DispData:
+    ids: list
+    x: list
+    y: list
+    z: list
+    ux: list
+    uy: list
+    uz: list
+    path: str
+
+
+def _unit_of(header_cell):
+    m = re.search(r"\(([^)]+)\)", header_cell)
+    return m.group(1).strip().lower() if m else None
+
+
+def _axis_of(header_cell, fname=""):
+    h = (header_cell + " " + fname).lower()
+    for ax, pats in (("x", ("ux", "x axis", "eje x", "_x", "dir x", "(x)")),
+                     ("y", ("uy", "y axis", "eje y", "_y", "dir y", "(y)")),
+                     ("z", ("uz", "z axis", "eje z", "_z", "dir z", "(z)"))):
+        if any(p in h for p in pats):
+            return ax
+    return None
+
+
+def _read_table(path):
+    text = _read_text_any(Path(path)).splitlines()
+    if not text:
+        raise ValueError(f"Fichero vacío: {Path(path).name}")
+    header = _split_row(text[0].strip())
+    rows = []
+    for ln in text[1:]:
+        p = _split_row(ln.strip())
+        if len(p) < 5:
+            continue
+        try:
+            rows.append([_f(v) for v in p])
+        except ValueError:
+            continue
+    if not rows:
+        raise ValueError(f"No se han podido leer nodos en {Path(path).name}")
+    return header, rows
+
+
+def read_disp(paths, loc_units="auto", disp_units="auto", log=print) -> DispData:
+    """Lee 1 fichero (UX,UY,UZ) o 3 ficheros (uno por dirección). Devuelve todo en mm."""
+    paths = [str(p) for p in paths if str(p).strip()]
+    if len(paths) not in (1, 3):
+        raise ValueError("Los desplazamientos deben venir en 1 fichero (UX, UY, UZ) o en 3 ficheros.")
+
+    tables = [_read_table(p) for p in paths]
+    hdr0, rows0 = tables[0]
+
+    # --- unidades de posición
+    lu = _unit_of(hdr0[1]) if len(hdr0) > 1 else None
+    xs0 = [r[1] for r in rows0]; ys0 = [r[2] for r in rows0]
+    extent = max(max(xs0) - min(xs0), max(ys0) - min(ys0))
+    if loc_units == "auto":
+        if lu in _UNIT_MM:
+            ls = _UNIT_MM[lu]
+            if ls == 1.0 and extent < 20:
+                log(f"[AVISO] {Path(paths[0]).name}: la cabecera dice mm pero la malla mide {extent:.3f}; "
+                    f"se interpreta en metros.")
+                ls = 1000.0
+        else:
+            ls = 1000.0 if extent < 20 else 1.0
+    else:
+        ls = _UNIT_MM[loc_units]
+
+    def disp_scale(cell, fname):
+        if disp_units != "auto":
+            return _UNIT_MM[disp_units]
+        u = _unit_of(cell)
+        if u in _UNIT_MM:
+            return _UNIT_MM[u]
+        log(f"[AVISO] {fname}: sin unidades en la cabecera del desplazamiento; se suponen las mismas "
+            f"que las coordenadas.")
+        return ls
+
+    comp = {}
+    if len(paths) == 1:
+        if len(hdr0) < 7 or len(rows0[0]) < 7:
+            raise ValueError(f"{Path(paths[0]).name}: se esperaban 7 columnas (Nodo, X, Y, Z, UX, UY, UZ).")
+        for j, ax in zip((4, 5, 6), "xyz"):
+            sc = disp_scale(hdr0[j], Path(paths[0]).name)
+            comp[ax] = {int(r[0]): r[j] * sc for r in rows0}
+    else:
+        assigned = {}
+        for p, (h, rows) in zip(paths, tables):
+            ax = _axis_of(h[4] if len(h) > 4 else "", Path(p).stem)
+            if ax is None or ax in assigned:
+                raise ValueError(f"No se puede deducir la dirección (X/Y/Z) de {Path(p).name}. "
+                                 f"Pon 'X', 'Y' o 'Z' en el nombre del fichero (p. ej. U_X.txt).")
+            assigned[ax] = (p, h, rows)
+        for ax, (p, h, rows) in assigned.items():
+            sc = disp_scale(h[4] if len(h) > 4 else "", Path(p).name)
+            comp[ax] = {int(r[0]): r[4] * sc for r in rows}
+
+    ids = [int(r[0]) for r in rows0 if all(int(r[0]) in comp[a] for a in "xyz")]
+    pos = {int(r[0]): (r[1] * ls, r[2] * ls, r[3] * ls) for r in rows0}
+    if len(ids) < len(rows0):
+        log(f"[AVISO] {len(rows0) - len(ids)} nodos sin las tres componentes; se ignoran.")
+    d = DispData(ids, [pos[i][0] for i in ids], [pos[i][1] for i in ids], [pos[i][2] for i in ids],
+                 [comp["x"][i] for i in ids], [comp["y"][i] for i in ids], [comp["z"][i] for i in ids],
+                 ";".join(paths))
+    umax = max(math.sqrt(a * a + b * b + c * c) for a, b, c in zip(d.ux, d.uy, d.uz))
+    log(f"  Desplazamientos {', '.join(Path(p).name for p in paths)}: {len(ids)} nodos, "
+        f"|u| máx = {umax * 1000:.3f} µm")
+    return d
+
+
+def subtract_disp(case: DispData, ref: DispData, log=print) -> DispData:
+    """Desplazamiento relativo case - ref (p. ej. T+1h respecto al estado de referencia)."""
+    r = {i: (a, b, c) for i, a, b, c in zip(ref.ids, ref.ux, ref.uy, ref.uz)}
+    keep = [k for k, i in enumerate(case.ids) if i in r]
+    if len(keep) < len(case.ids):
+        log(f"[AVISO] {len(case.ids) - len(keep)} nodos del caso no están en la referencia; se ignoran.")
+    g = lambda lst: [lst[k] for k in keep]
+    ids = g(case.ids)
+    return DispData(ids, g(case.x), g(case.y), g(case.z),
+                    [case.ux[k] - r[case.ids[k]][0] for k in keep],
+                    [case.uy[k] - r[case.ids[k]][1] for k in keep],
+                    [case.uz[k] - r[case.ids[k]][2] for k in keep], case.path)
+
+
+def _cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def _solve3(M, b):
+    """Resuelve M·x = b (3x3) por Cramer; None si es casi singular."""
+    det = lambda A: (A[0][0] * (A[1][1] * A[2][2] - A[1][2] * A[2][1])
+                     - A[0][1] * (A[1][0] * A[2][2] - A[1][2] * A[2][0])
+                     + A[0][2] * (A[1][0] * A[2][1] - A[1][1] * A[2][0]))
+    D = det(M)
+    scale = max(abs(v) for row in M for v in row) or 1.0
+    if abs(D) < 1e-9 * scale ** 3:
+        return None
+    out = []
+    for j in range(3):
+        A = [row[:] for row in M]
+        for i in range(3):
+            A[i][j] = b[i]
+        out.append(det(A) / D)
+    return tuple(out)
+
+
+def rigid_fit(points, disps):
+    """Ajuste de sólido rígido u = t + θ×(p-c). Devuelve (t, θ, c, rms) o θ=None si es degenerado."""
+    n = len(points)
+    c = tuple(sum(p[i] for p in points) / n for i in range(3))
+    t = tuple(sum(u[i] for u in disps) / n for i in range(3))
+    M = [[0.0] * 3 for _ in range(3)]
+    b = [0.0, 0.0, 0.0]
+    for p, u in zip(points, disps):
+        r = tuple(p[i] - c[i] for i in range(3))
+        rr = r[0] ** 2 + r[1] ** 2 + r[2] ** 2
+        for i in range(3):
+            for j in range(3):
+                M[i][j] += (rr if i == j else 0.0) - r[i] * r[j]
+        cr = _cross(r, tuple(u[i] - t[i] for i in range(3)))
+        for i in range(3):
+            b[i] += cr[i]
+    th = _solve3(M, b) if n >= 3 else None
+    th_ = th or (0.0, 0.0, 0.0)
+    res = 0.0
+    for p, u in zip(points, disps):
+        r = tuple(p[i] - c[i] for i in range(3))
+        w = _cross(th_, r)
+        res += sum((u[i] - t[i] - w[i]) ** 2 for i in range(3))
+    return t, th, c, math.sqrt(res / n)
+
+
+def _rot_from_vector(th):
+    """Matriz de rotación (Rodrigues) para el vector de giro θ (rad)."""
+    a = math.sqrt(sum(v * v for v in th))
+    if a < 1e-15:
+        return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    k = [v / a for v in th]
+    K = [[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]]
+    K2 = _mm(K, K)
+    s, c1 = math.sin(a), 1 - math.cos(a)
+    return [[(1.0 if i == j else 0.0) + s * K[i][j] + c1 * K2[i][j] for j in range(3)] for i in range(3)]
+
+
+def zemax_angles(R):
+    """Ángulos Zemax (intrínseco X·Y·Z) a partir de R."""
+    ty = math.degrees(math.asin(max(-1.0, min(1.0, R[0][2]))))
+    tx = math.degrees(math.atan2(-R[1][2], R[2][2]))
+    tz = math.degrees(math.atan2(-R[0][1], R[0][0]))
+    return tx, ty, tz
+
+
+def compute_stability_disp(results: list, disp: DispData, prm: "Params", log=print):
+    k = max(3, int(prm.disp_nodes))
+    pts = list(zip(disp.x, disp.y, disp.z))
+    out = []
+    for r in results:
+        cfg = r.cfg
+        P = (r.cold.x, r.cold.y, r.cold.z)
+        S, use3d = P, False
+        if cfg.fem_point.strip():
+            vals = [float(v) for v in re.split(r"[;\s]+", cfg.fem_point.strip().replace(",", ".")) if v]
+            use3d = len(vals) > 2
+            S = (vals[0], vals[1], vals[2] if use3d else P[2])
+        # Sin Z en el punto FEM: vecinos en X-Y (nodos del banco bajo el elemento, en todas sus capas).
+        # Con x;y;z: vecinos en 3D (modelos que incluyen la montura).
+        if use3d:
+            dist = lambda p: math.dist(S, p)
+        else:
+            dist = lambda p: math.hypot(S[0] - p[0], S[1] - p[1])
+        best = heapq.nsmallest(k, ((dist(p), i) for i, p in enumerate(pts)))
+        dmin = best[0][0]
+        if dmin > prm.fem_warn_mm:
+            log(f"[AVISO] {cfg.acronym}: nodo FEM más cercano a {dmin:.1f} mm del punto de muestreo "
+                f"({S[0]:.1f}, {S[1]:.1f}{', %.1f' % S[2] if use3d else ''}). Revisa unidades o el punto FEM.")
+        sel_p = [pts[i] for _, i in best]
+        sel_u = [(disp.ux[i], disp.uy[i], disp.uz[i]) for _, i in best]
+        t, th, c, rms = rigid_fit(sel_p, sel_u)
+        if th is None:
+            log(f"[AVISO] {cfg.acronym}: los nodos cercanos están alineados; no se puede estimar el giro "
+                f"(se usa solo la traslación). Aumenta 'Nodos para el ajuste'.")
+            th = (0.0, 0.0, 0.0)
+        lever = tuple(P[i] - c[i] for i in range(3))
+        w = _cross(th, lever)
+        u = tuple(t[i] + w[i] for i in range(3))
+
+        R = r.surface.R
+        loc = lambda v: tuple(sum(R[i][j] * v[i] for i in range(3)) for j in range(3))   # Rᵀ·v
+        Rp = _mm(_rot_from_vector(th), R)
+        z0, z1 = zemax_angles(R), zemax_angles(Rp)
+        dtilt = tuple(((b - a + 180.0) % 360.0) - 180.0 for a, b in zip(z0, z1))
+        if abs(abs(R[0][2]) - 1.0) < 1e-6:
+            log(f"[AVISO] {cfg.acronym}: Tilt Y de Zemax = ±90°; la variación de ángulos Zemax no es "
+                f"fiable. Usa los giros en ejes locales.")
+        ul = loc(u)
+        out.append(StabilityResult(
+            cfg.acronym, S[0], S[1], None, len(best), dmin, u[0], u[1], ul[0], ul[1], ul[2],
+            dZ=u[2], kind="desp", rot=th, rot_loc=loc(th), d_tilt_zemax=dtilt, fit_rms_um=rms * 1000.0))
+    return out
+
+
+def run_stability(results, prm, t0, cases, disp_ref=(), log=print):
+    """Ejecuta todos los casos de estabilidad. Devuelve [(etiqueta, [StabilityResult])]."""
+    out = []
+    fem0 = None
+    ref = None
+    for label, files, kind in cases:
+        missing = [f for f in files if not Path(f).exists()]
+        if missing:
+            log(f"[AVISO] Caso '{label}': no existe {missing[0]}. Se omite.")
+            continue
+        if kind == "temp":
+            if not t0 or not Path(t0).exists():
+                log(f"[ERROR] Caso '{label}': falta el fichero de temperaturas de referencia T0.")
+                continue
+            if fem0 is None:
+                fem0 = read_fem(t0, prm.fem_units, log)
+            fem1 = read_fem(files[0], prm.fem_units, log)
+            out.append((label, compute_stability(results, build_dT_grid(fem0, fem1, prm, log), prm, log)))
+        else:
+            d = read_disp(files, prm.fem_units, prm.disp_units, log)
+            if disp_ref:
+                if ref is None:
+                    ref = read_disp(disp_ref, prm.fem_units, prm.disp_units, log)
+                d = subtract_disp(d, ref, log)
+                log(f"  Caso '{label}': desplazamiento relativo a la referencia.")
+            else:
+                log(f"  Caso '{label}': desplazamiento absoluto (sin referencia).")
+            out.append((label, compute_stability_disp(results, d, prm, log)))
     return out
 
 
@@ -616,14 +972,18 @@ def _abs(p, base):
     return str((Path(base) / q).resolve())
 
 
-def profile_to_dict(zemax_path, prm, elements, fem_t0, fem_cases, out_dir, out_name, base=None):
+def profile_to_dict(zemax_path, prm, elements, fem_t0, fem_cases, out_dir, out_name, base=None,
+                    disp_ref=()):
+    """fem_cases: lista de (etiqueta, [ficheros], tipo) con tipo 'temp' o 'desp'."""
     return {
-        "version": 2,
+        "version": 3,
         "zemax_file": _rel(zemax_path, base),
         "params": asdict(prm),
         "elements": [asdict(e) for e in elements],
         "fem_t0": _rel(fem_t0, base),
-        "fem_cases": [{"label": l, "file": _rel(f, base)} for l, f in fem_cases],
+        "fem_cases": [{"label": l, "kind": k, "files": [_rel(f, base) for f in fs]}
+                      for l, fs, k in fem_cases],
+        "disp_ref": [_rel(f, base) for f in disp_ref],
         "out_dir": _rel(out_dir, base),
         "out_name": out_name or "",
     }
@@ -638,6 +998,10 @@ def profile_from_dict(d, base=None):
         if e.get("fine_rounding") and not cfg.ang_step:      # perfiles de la versión anterior
             cfg.ang_step = str(fine_old)
         els.append(cfg)
-    cases = [(c["label"], _abs(c["file"], base)) for c in d.get("fem_cases", [])]
+    cases = []
+    for c in d.get("fem_cases", []):
+        files = c.get("files") or [c.get("file", "")]          # perfiles antiguos: un solo "file"
+        cases.append((c["label"], [_abs(f, base) for f in files], c.get("kind", "temp")))
+    disp_ref = [_abs(f, base) for f in d.get("disp_ref", [])]
     return _abs(d.get("zemax_file", ""), base), prm, els, _abs(d.get("fem_t0", ""), base), cases, \
-        _abs(d.get("out_dir", ""), base), d.get("out_name", "")
+        _abs(d.get("out_dir", ""), base), d.get("out_name", ""), disp_ref

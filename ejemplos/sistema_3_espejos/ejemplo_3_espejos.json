@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "zemax_file": "zemax_ejemplo.txt",
   "params": {
     "t_cold_k": 130.0,
@@ -19,6 +19,8 @@
     "fem_nodes": 5,
     "fem_model": "trayectoria",
     "fem_warn_mm": 50.0,
+    "disp_nodes": 12,
+    "disp_units": "auto",
     "material": "Al 6061-T6 (NIST)",
     "mat_for_conversion": true,
     "mat_for_stability": true
@@ -101,9 +103,24 @@
   "fem_cases": [
     {
       "label": "T+1h",
-      "file": "FEM_T1h.txt"
+      "kind": "temp",
+      "files": [
+        "FEM_T1h.txt"
+      ]
+    },
+    {
+      "label": "T+1h desp",
+      "kind": "desp",
+      "files": [
+        "FEM_U_T1h.txt"
+      ]
     }
   ],
+  "disp_ref": [
+    "FEM_U_T0.txt"
+  ],
   "out_dir": "resultados",
-  "out_name": "ejemplo_3_espejos.xlsx"
+  "out_name": "ejemplo_3_espejos.xlsx",
+  "removed": [],
+  "open_excel": true
 }
