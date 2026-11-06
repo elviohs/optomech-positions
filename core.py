@@ -275,13 +275,18 @@ _RE_CONT = re.compile(r"^\s+" + r"\s+".join([_NUM] * 5) + r"\s*$")
 def _read_text_any(path: Path) -> str:
     raw = path.read_bytes()
     if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        return raw.decode("utf-16")
-    for enc in ("utf-8", "cp1252", "latin-1"):
-        try:
-            return raw.decode(enc)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("latin-1", errors="replace")
+        text = raw.decode("utf-16")
+    else:
+        for enc in ("utf-8", "cp1252", "latin-1"):
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            text = raw.decode("latin-1", errors="replace")
+    # Normaliza finales de línea (incluye "\r\r\n", que aparece al copiar ficheros entre sistemas)
+    return re.sub(r"\r+\n?", "\n", text)
 
 
 def read_zemax(path) -> tuple[list[Surface], dict]:

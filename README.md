@@ -163,6 +163,7 @@ materials.py       curvas de dilatación ε(T), α(T)
 excel_out.py       generación del Excel
 gui.py             interfaz tkinter
 cli.py             ejecución por línea de comandos
+CLAUDE.md          contexto y reglas del proyecto para Claude Code
 optomech-positions.spec, build_exe.bat   generación del ejecutable (PyInstaller)
 materiales.json    base de materiales
 ejemplos/          sistema sintético de 3 espejos (Zemax + ANSYS)

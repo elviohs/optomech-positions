@@ -1,5 +1,10 @@
 # Cambios
 
+## 1.5.1
+- Lectura robusta de ficheros con finales de línea anómalos (\r\r\n).
+- Corrección de un test que fallaba en Windows; los tests automáticos se ejecutan también en Windows.
+- CLAUDE.md con el contexto y las reglas del proyecto para trabajar con Claude Code.
+
 ## 1.5.0
 - La tolerancia de posicionado por defecto pasa a la pestaña 1, junto al panel de tolerancias por
   elemento; la tabla muestra el valor por defecto aplicado.

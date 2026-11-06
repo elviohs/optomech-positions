@@ -107,9 +107,19 @@ def test_summary_table_parsed(tmp_path):
         "  1\t 1,0\t 0,0\t 0,0\t 0,0\t 0,0\tM", "   \t 0,0\t 1,0\t 0,0\t 0,0\t 0,0", "   \t 0,0\t 0,0\t 1,0\t 100,0\t 0,0", "",
         "GLOBAL SURFACE CENTER OF CURVATURE POINTS:"])
     f = tmp_path / "z.txt"
-    f.write_text(txt, encoding="utf-16")
+    f.write_bytes(txt.encode("utf-16"))          # sin traducción de finales de línea (Windows)
     surfs, info = core.read_zemax(f)
     assert info["summary"]
     m = next(s for s in surfs if s.comment == "M")
     assert (m.surf_type, m.radius, m.conic, m.glass) == ("STANDARD", pytest.approx(1599.175), -1.0, "MIRROR")
     assert surfs[0].radius == float("inf")
+
+
+def test_double_cr_line_endings(tmp_path):
+    """Ficheros con '\\r\\r\\n' (copias entre sistemas) se leen igual."""
+    src = (EXAMPLE / "zemax_ejemplo.txt").read_bytes().decode("utf-16")
+    f = tmp_path / "z.txt"
+    f.write_bytes(src.replace("\r\n", "\r\r\n").encode("utf-16"))
+    a, _ = core.read_zemax(EXAMPLE / "zemax_ejemplo.txt")
+    b, _ = core.read_zemax(f)
+    assert [(s.surf_id, s.comment, s.x, s.y, s.z) for s in a] == [(s.surf_id, s.comment, s.x, s.y, s.z) for s in b]
