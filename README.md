@@ -90,7 +90,7 @@ La reconstrucción supone que el rayo central pasa por la posición de cada elem
 
 ### Formato de los ficheros ANSYS
 
-Todos son texto delimitado por tabuladores, punto y coma o espacios, con decimal coma o punto. Las unidades se leen de la cabecera: m, mm o µm (también escrito `um`).
+Todos son texto delimitado por tabuladores, punto y coma, espacios o comas (CSV con punto decimal), con decimal coma o punto. Las unidades se leen de la cabecera: m, mm o µm (también escrito `um`).
 
 **Temperaturas**:
 ```

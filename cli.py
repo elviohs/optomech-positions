@@ -12,6 +12,9 @@ def main(profile):
         print(m)
         if m.startswith(("[AVISO]", "[ERROR]")):
             warnings.append(m)
+    errs = core.validate_setup(els, prm, cases, t0, dref)
+    if errs:
+        sys.exit("Errores en el perfil:\n  - " + "\n  - ".join(errs))
     surfs, info = core.read_zemax(zf)
     core.check_material(prm, log)
     res = core.compute_positions(surfs, els, prm, log)

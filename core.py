@@ -32,6 +32,10 @@ DEFAULT_IGNORE = {"tilt x", "tilt y", "tilt z", "field rotation"}
 
 GIMBAL_TOL = 1e-6
 
+# Si una malla FEM "en mm" mide menos de esto, en realidad está en metros (un banco óptico en
+# metros mide < 5; un modelo real en mm mide bastante más de 5 mm). Ver read_fem / read_disp.
+UNIT_EXTENT_LIMIT = 5.0
+
 
 # -----------------------------------------------------------------------------
 # Estructuras de datos
@@ -134,6 +138,9 @@ def check_material(prm: "Params", log=print):
         if prm.mat_for_conversion and not m.in_range(T):
             log(f"[AVISO] {T} K está fuera del rango de validez de '{m.name}' "
                 f"({m.t_min}-{m.t_max} K).")
+    if prm.t_warm_k == prm.t_cold_k:
+        log(f"  Material {m.name}: α({prm.t_cold_k:g} K) = {m.alpha(prm.t_cold_k) * 1e6:.2f} ppm/K")
+        return
     log(f"  Material {m.name}: α({prm.t_cold_k:g} K) = {m.alpha(prm.t_cold_k) * 1e6:.2f} ppm/K, "
         f"factor {prm.t_cold_k:g}->{prm.t_warm_k:g} K = {m.factor(prm.t_cold_k, prm.t_warm_k):.6f} "
         f"(CTE medio {m.mean_cte(prm.t_cold_k, prm.t_warm_k) * 1e6:.2f} ppm/K)")
@@ -254,6 +261,14 @@ def r_to_creo_angles(R):
         tx = math.degrees(math.atan2(R[2][1], R[2][2]))
         tz = math.degrees(math.atan2(R[1][0], R[0][0]))
     return tx, ty, tz
+
+
+def parse_fem_point(text: str):
+    """Punto FEM 'x;y' o 'x;y;z' (mm)."""
+    parts = [p for p in re.split(r"[;\s]+", text.strip().replace(",", ".")) if p]
+    if len(parts) not in (2, 3):
+        raise ValueError(f"El punto FEM debe ser 'x;y' o 'x;y;z' y se recibió '{text}'")
+    return [float(p) for p in parts]
 
 
 def parse_triplet(text: str, n: int):
@@ -392,14 +407,31 @@ def parse_ignore(text: str) -> set:
 def default_elements(surfaces: list[Surface], show_all: bool = False,
                      ignore: str = "") -> list[ElementCfg]:
     ign = parse_ignore(ignore) if ignore else DEFAULT_IGNORE
-    out = []
+    out, used = [], set()
     for s in surfaces:
         c = s.comment
         if not show_all and (not c or c.lower() in ign):
             continue
-        acr = re.sub(r"[^A-Za-z0-9_]", "", c.split()[-1]).upper() if c else f"S{s.surf_id}"
+        acr = default_acronym(c, s.surf_id)
+        base, n = acr, 2
+        while acr in used:                       # acrónimos siempre únicos
+            acr, n = f"{base}_{n}", n + 1
+        used.add(acr)
         out.append(ElementCfg(surf_id=s.surf_id, zemax_label=c, acronym=acr, include=bool(c)))
     return out
+
+
+def default_acronym(label: str, surf_id: int) -> str:
+    """Última palabra de la etiqueta ('IPO FM25' -> FM25); si es solo un número o una palabra
+    genérica, la etiqueta completa ('Fold mirror 1' -> FOLD_MIRROR_1)."""
+    words = [re.sub(r"[^A-Za-z0-9_]", "", w) for w in (label or "").split()]
+    words = [w for w in words if w]
+    if not words:
+        return f"S{surf_id}"
+    last = words[-1]
+    if len(words) > 1 and (last.isdigit() or len(last) < 2):
+        return "_".join(words).upper()[:24]
+    return last.upper()[:24]
 
 
 # -----------------------------------------------------------------------------
@@ -437,6 +469,75 @@ def round_pose(p: Pose, pos_step: float, ang_step: float) -> Pose:
     a, s = ang_step, pos_step
     return Pose(round_excel(p.x, s), round_excel(p.y, s), round_excel(p.z, s),
                 round_excel(p.tx, a), round_excel(p.ty, a), round_excel(p.tz, a))
+
+
+def validate_setup(elements, prm: Params, cases=(), t0="", disp_ref=()) -> list[str]:
+    """Comprueba la configuración antes de calcular. Devuelve la lista de errores (vacía si todo va bien)."""
+    errs = []
+    inc = [e for e in elements if e.include]
+    if not inc:
+        errs.append("No hay ningún elemento incluido.")
+    seen = {}
+    for e in inc:
+        name = e.acronym.strip()
+        tag = name or f"superficie {e.surf_id}"
+        if not name:
+            errs.append(f"La superficie {e.surf_id} ('{e.zemax_label}') no tiene acrónimo.")
+        elif name in seen:
+            errs.append(f"Acrónimo repetido '{name}' (superficies {seen[name]} y {e.surf_id}).")
+        else:
+            seen[name] = e.surf_id
+        for fld, txt in (("tolerancia de posición", e.pos_step), ("tolerancia angular", e.ang_step)):
+            if txt.strip():
+                try:
+                    if float(txt.replace(",", ".")) <= 0:
+                        raise ValueError
+                except ValueError:
+                    errs.append(f"{tag}: {fld} no válida ('{txt}').")
+        if e.override.strip():
+            try:
+                parse_triplet(e.override, 3)
+            except ValueError:
+                errs.append(f"{tag}: override no válido ('{e.override}'); debe ser 'tx;ty;tz'.")
+        if e.fem_point.strip():
+            try:
+                parse_fem_point(e.fem_point)
+            except ValueError:
+                errs.append(f"{tag}: punto FEM no válido ('{e.fem_point}'); debe ser 'x;y' o 'x;y;z'.")
+        if e.pos_offset < 0:
+            errs.append(f"{tag}: el offset de posición no puede ser negativo.")
+    if prm.t_warm_k == prm.t_cold_k and not prm.use_manual_factor:
+        errs.append("La temperatura de montaje y la de operación son iguales.")
+    if prm.round_pos_mm <= 0 or prm.round_ang_deg <= 0:
+        errs.append("Las tolerancias por defecto deben ser mayores que cero.")
+    if prm.fem_nodes < 1:
+        errs.append("'Nodos FEM por punto' debe ser al menos 1.")
+    if prm.disp_nodes < 3:
+        errs.append("'Nodos para el ajuste de sólido rígido' debe ser al menos 3.")
+    if prm.material:
+        try:
+            prm.mat()
+        except Exception as ex:
+            errs.append(f"{ex}. Elige otro material o añádelo a materiales.json.")
+    labels = {}
+    for label, files, kind in cases:
+        if not label.strip():
+            errs.append("Hay un caso de estabilidad sin nombre.")
+        sheet = sheet_name_for_case(label)
+        if sheet in labels:
+            errs.append(f"Los casos '{labels[sheet]}' y '{label}' darían la misma pestaña en el Excel "
+                        f"('{sheet}'). Cambia uno de los nombres.")
+        labels[sheet] = label
+        if kind == "temp" and not str(t0).strip():
+            errs.append(f"El caso '{label}' es de temperaturas y falta el fichero de referencia T0.")
+        if kind == "desp" and len(files) not in (1, 3):
+            errs.append(f"El caso '{label}' debe tener 1 o 3 ficheros de desplazamientos.")
+    return errs
+
+
+def sheet_name_for_case(label: str) -> str:
+    """Nombre de pestaña Excel para un caso (máx. 31 caracteres, sin caracteres prohibidos)."""
+    return re.sub(r"[\[\]\*\?/\\:]", "_", f"Estab {label.strip()}")[:31]
 
 
 def compute_positions(surfaces, elements, prm: Params, log=print) -> list[ElementResult]:
@@ -502,7 +603,10 @@ def _split_row(line: str):
         return line.split("\t")
     if ";" in line:
         return line.split(";")
-    return line.split()
+    parts = line.split()
+    if len(parts) == 1 and line.count(",") >= 4:      # CSV separado por comas (decimal con punto)
+        return line.split(",")
+    return parts
 
 
 def read_fem(path, units: str = "auto", log=print) -> FEMData:
@@ -535,12 +639,12 @@ def read_fem(path, units: str = "auto", log=print) -> FEMData:
             scale, det = 1000.0, "m (cabecera)"
         elif hdr_unit == "mm":
             scale, det = 1.0, "mm (cabecera)"
-            if extent < 20:
+            if extent < UNIT_EXTENT_LIMIT:
                 log(f"[AVISO] {path.name}: la cabecera dice mm pero la extensión de la malla es "
                     f"{extent:.3f}. Parece que está en metros; se convierte a mm.")
                 scale, det = 1000.0, "m (deducido por extensión)"
         else:
-            scale, det = (1000.0, "m (deducido)") if extent < 20 else (1.0, "mm (deducido)")
+            scale, det = (1000.0, "m (deducido)") if extent < UNIT_EXTENT_LIMIT else (1.0, "mm (deducido)")
     else:
         scale, det = (1000.0, "m (forzado)") if units == "m" else (1.0, "mm (forzado)")
 
@@ -622,7 +726,7 @@ def compute_stability(results: list[ElementResult], grid: _Grid, prm: Params,
         ex, ey = r.cold.x, r.cold.y
         sx, sy = ex, ey
         if cfg.fem_point.strip():
-            sx, sy = parse_triplet(cfg.fem_point, 2)
+            sx, sy = parse_fem_point(cfg.fem_point)[:2]
 
         best = grid.knn(sx, sy, k)
         dmin = best[0][0]
@@ -739,12 +843,12 @@ def read_disp(paths, loc_units="auto", disp_units="auto", log=print) -> DispData
     if loc_units == "auto":
         if lu in _UNIT_MM:
             ls = _UNIT_MM[lu]
-            if ls == 1.0 and extent < 20:
+            if ls == 1.0 and extent < UNIT_EXTENT_LIMIT:
                 log(f"[AVISO] {Path(paths[0]).name}: la cabecera dice mm pero la malla mide {extent:.3f}; "
                     f"se interpreta en metros.")
                 ls = 1000.0
         else:
-            ls = 1000.0 if extent < 20 else 1.0
+            ls = 1000.0 if extent < UNIT_EXTENT_LIMIT else 1.0
     else:
         ls = _UNIT_MM[loc_units]
 
@@ -881,7 +985,7 @@ def compute_stability_disp(results: list, disp: DispData, prm: "Params", log=pri
         P = (r.cold.x, r.cold.y, r.cold.z)
         S, use3d = P, False
         if cfg.fem_point.strip():
-            vals = [float(v) for v in re.split(r"[;\s]+", cfg.fem_point.strip().replace(",", ".")) if v]
+            vals = parse_fem_point(cfg.fem_point)
             use3d = len(vals) > 2
             S = (vals[0], vals[1], vals[2] if use3d else P[2])
         # Sin Z en el punto FEM: vecinos en X-Y (nodos del banco bajo el elemento, en todas sus capas).

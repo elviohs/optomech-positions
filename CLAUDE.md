@@ -48,6 +48,7 @@ documentación: español.
   - Zemax: R = Rx·Ry·Rz (intrínseco). CREO: R = Rz·Ry·Rx; gimbal lock (ty = ±90°): tz = 0.
   - Térmica: P_cal = P_fijo + (P_frío − P_fijo)·(1 + f).
   - Redondeo: mitad hacia fuera (como ROUND de Excel).
+- Toda comprobación de configuración nueva va en `core.validate_setup` (la usan GUI y CLI) con su test.
 - Los perfiles antiguos deben seguir cargando (compatibilidad hacia atrás en `profile_from_dict`).
 - Coeficientes de materiales: solo con `"verificado": true` si se han comprobado contra la fuente.
 - Pedir confirmación antes de: subir a GitHub (push y etiquetas), borrar ficheros o reescribir el historial.

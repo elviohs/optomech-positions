@@ -7,7 +7,7 @@ set PYTHON_PATH=
 
 cd /d "%~dp0"
 if defined PYTHON_PATH (
-    set "PY=%PYTHON_PATH%"
+    set PY="%PYTHON_PATH%"
 ) else (
     where py >nul 2>&1 && set "PY=py -3"
 )

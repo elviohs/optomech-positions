@@ -3,6 +3,8 @@
 # =============================================================================
 import datetime as _dt
 import re
+
+import core
 from dataclasses import asdict
 from pathlib import Path
 
@@ -136,8 +138,9 @@ def write_workbook(path, zemax_file, zemax_info, prm, results, stability, warnin
     def urad(v):
         return float(v * 1e6)
 
+    files_of = {l: fs for l, fs, _ in fem_cases}
     for label, stab in stability:
-        ws = wb.create_sheet(_safe_sheet(f"Estab {label}"))
+        ws = wb.create_sheet(core.sheet_name_for_case(label))
         kind = stab[0].kind if stab else "temp"
         ws["A1"] = f"Estabilidad — {label} (posiciones en frío para Zemax)"; ws["A1"].font = tf
         if kind == "temp":
@@ -149,6 +152,11 @@ def write_workbook(path, zemax_file, zemax_info, prm, results, stability, warnin
                         f"{prm.disp_nodes} nodos | desplazamiento en el elemento con brazo de palanca | "
                         f"{'relativo a la referencia' if disp_ref else 'absoluto (sin referencia)'}.")
         ws["A2"].font = Font(italic=True, size=8)
+        from pathlib import Path as _P
+        fn = "; ".join(_P(f).name for f in files_of.get(label, []))
+        ref = (_P(fem_t0).name if kind == "temp" else "; ".join(_P(f).name for f in disp_ref)) or "—"
+        ws["A3"] = f"Fichero del caso: {fn}   |   Referencia: {ref}"
+        ws["A3"].font = Font(italic=True, size=8)
         fixed_cols(ws, 5)
         header_block(ws, 4, 4, "Posición global perturbada (frío)", SUB6[:3], BLUE)
         header_block(ws, 4, 7, "Ángulos Zemax perturbados", SUB6[3:], LILAC)

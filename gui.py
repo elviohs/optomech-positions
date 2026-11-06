@@ -3,6 +3,7 @@
 # =============================================================================
 from __future__ import annotations
 
+import copy
 import json
 import math
 import os
@@ -14,7 +15,7 @@ import traceback
 import tkinter as tk
 from dataclasses import asdict
 from pathlib import Path
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 
 import core
 import excel_out
@@ -261,6 +262,9 @@ class App(tk.Tk):
         ttk.Button(r2, text="Quitar seleccionado", command=self.del_case).pack(side="left", padx=4)
         self.lst_cases = tk.Listbox(g, height=5)
         self.lst_cases.pack(fill="x", pady=(6, 0))
+        self.lst_cases.bind("<Double-1>", self.rename_case)
+        ttk.Label(g, foreground="#555", text="Doble clic en un caso para cambiarle el nombre. El nombre "
+                  "se usa como pestaña del Excel.").pack(anchor="w")
 
         gt = ttk.LabelFrame(f, text="Temperaturas ANSYS (Nodo, X, Y, Z, T) — modelo de 1er orden en X-Y",
                             padding=8)
@@ -375,7 +379,10 @@ class App(tk.Tk):
         except Exception as e:
             messagebox.showerror("materiales.json", str(e)); names = []
         self.cb_mat["values"] = [MANUAL_MAT] + names
-        if self.v_material.get() not in self.cb_mat["values"]:
+        cur = self.v_material.get()
+        if cur not in self.cb_mat["values"]:
+            self._log(f"[AVISO] El material '{cur}' no está en materiales.json; se usa CTE manual. "
+                      f"Revisa la pestaña 2 antes de calcular.", "warn")
             self.v_material.set(MANUAL_MAT)
         self._update_factor()
 
@@ -523,7 +530,7 @@ class App(tk.Tk):
                     core.parse_triplet(txt, 3)
                     setattr(el, key, txt)
                 elif key == "fem_point" and txt:
-                    core.parse_triplet(txt, 2)
+                    core.parse_fem_point(txt)
                     setattr(el, key, txt)
                 else:
                     setattr(el, key, txt)
@@ -542,8 +549,40 @@ class App(tk.Tk):
                                        filetypes=[("Texto", "*.txt *.csv"), ("Todos", "*.*")])
         if not p:
             return
-        label = self.v_case_label.get().strip() or f"Caso {len(self.fem_cases) + 1}"
+        label = self._new_case_label()
+        if label is None:
+            return
         self.fem_cases.append((label, [p], "temp"))
+        self._refresh_cases()
+
+    def _label_taken(self, label, skip=None):
+        sheet = core.sheet_name_for_case(label)
+        return any(core.sheet_name_for_case(l) == sheet for i, (l, _, _) in enumerate(self.fem_cases)
+                   if i != skip)
+
+    def _new_case_label(self):
+        label = self.v_case_label.get().strip() or f"Caso {len(self.fem_cases) + 1}"
+        if self._label_taken(label):
+            messagebox.showerror("Nombre repetido",
+                                 f"Ya hay un caso llamado '{label}' (o que daría la misma pestaña en el "
+                                 f"Excel). Escribe otro nombre en 'Nombre del caso' antes de añadirlo.")
+            return None
+        return label
+
+    def rename_case(self, _event=None):
+        sel = self.lst_cases.curselection()
+        if not sel:
+            return
+        i = sel[0]
+        old, files, kind = self.fem_cases[i]
+        new = simpledialog.askstring("Renombrar caso", "Nuevo nombre del caso:", initialvalue=old, parent=self)
+        if not new or not new.strip() or new.strip() == old:
+            return
+        new = new.strip()
+        if self._label_taken(new, skip=i):
+            messagebox.showerror("Nombre repetido", f"Ya hay un caso llamado '{new}'.")
+            return
+        self.fem_cases[i] = (new, files, kind)
         self._refresh_cases()
 
     def _ask_disp_files(self, title):
@@ -560,7 +599,9 @@ class App(tk.Tk):
         ps = self._ask_disp_files("Desplazamientos ANSYS: 1 fichero (UX,UY,UZ) o 3 ficheros (uno por eje)")
         if not ps:
             return
-        label = self.v_case_label.get().strip() or f"Caso {len(self.fem_cases) + 1}"
+        label = self._new_case_label()
+        if label is None:
+            return
         self.fem_cases.append((label, ps, "desp"))
         self._refresh_cases()
 
@@ -706,6 +747,10 @@ class App(tk.Tk):
         except Exception as e:
             messagebox.showerror("Perfil", f"No se pudo leer el perfil:\n{e}"); return
         self._set_params(prm)
+        if prm.material and prm.material not in materials.load_materials():
+            messagebox.showwarning("Material", f"El perfil usa el material '{prm.material}', que no está "
+                                   f"en tu materiales.json. Se usará CTE manual hasta que lo añadas.")
+            self.v_material.set(MANUAL_MAT)
         self.elements = els
         self.removed = set(d.get("removed", []))
         self.v_open_excel.set(d.get("open_excel", True))
@@ -736,15 +781,25 @@ class App(tk.Tk):
             messagebox.showerror("Parámetros", str(e)); return
         if not self.surfaces:
             messagebox.showwarning("Zemax", "Primero lee un fichero Zemax."); return
+        errs = core.validate_setup(self.elements, prm, self.fem_cases, self.v_t0.get(), self.disp_ref)
+        if errs:
+            for e in errs:
+                self._log(f"[ERROR] {e}", "err")
+            messagebox.showerror("Revisa la configuración",
+                                 "No se puede calcular:\n\n• " + "\n• ".join(errs[:12]) +
+                                 ("\n…" if len(errs) > 12 else ""))
+            return
         out = Path(self.v_out_dir.get()) / (self.v_out_name.get().strip() or "posiciones.xlsx")
         if out.suffix.lower() != ".xlsx":
             out = out.with_suffix(".xlsx")
         self.btn_run.state(["disabled"])
-        args = (prm, list(self.elements), self.v_t0.get().strip(), list(self.fem_cases), out,
-                self.v_zemax.get(), self.v_open_excel.get(), list(self.disp_ref))
+        args = (prm, copy.deepcopy(self.elements), self.v_t0.get().strip(), copy.deepcopy(self.fem_cases),
+                out, self.v_zemax.get(), self.v_open_excel.get(), list(self.disp_ref),
+                list(self.surfaces), dict(self.zemax_info))
         threading.Thread(target=self._worker, args=args, daemon=True).start()
 
-    def _worker(self, prm, elements, t0, cases, out, zemax_path, open_excel=False, disp_ref=()):
+    def _worker(self, prm, elements, t0, cases, out, zemax_path, open_excel=False, disp_ref=(),
+                surfaces=None, zemax_info=None):
         warnings = []
 
         def log(m):
@@ -756,7 +811,7 @@ class App(tk.Tk):
             log("=" * 70)
             log(f"Factor térmico {prm.factor:.6f} | punto fijo ({prm.ref_x}, {prm.ref_y}, {prm.ref_z})")
             core.check_material(prm, log)
-            results = core.compute_positions(self.surfaces, elements, prm, log)
+            results = core.compute_positions(surfaces, elements, prm, log)
             log(f"{'Acr.':8s} {'X frío':>10s} {'Y frío':>10s} {'Z frío':>9s} | "
                 f"{'X cal.r':>9s} {'Y cal.r':>9s} {'Z cal.r':>8s} | {'tx':>7s} {'ty':>7s} {'tz':>7s}")
             for r in results:
@@ -783,7 +838,7 @@ class App(tk.Tk):
                                 f"{x.rot[0] * 1e6:7.2f} {x.rot[1] * 1e6:7.2f} {x.rot[2] * 1e6:7.2f} | "
                                 f"{x.fit_rms_um:.3f}")
 
-            path = excel_out.write_workbook(out, zemax_path, self.zemax_info, prm, results,
+            path = excel_out.write_workbook(out, zemax_path, zemax_info, prm, results,
                                             stability, warnings, t0, cases, disp_ref)
             log(f"[OK] Excel generado: {path}")
             if open_excel:

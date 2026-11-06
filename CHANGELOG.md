@@ -1,5 +1,20 @@
 # Cambios
 
+## 1.5.2 — revisión de fallos
+- Validación de la configuración antes de calcular (GUI y CLI): acrónimos vacíos o repetidos,
+  tolerancias, overrides y puntos FEM mal escritos, temperaturas iguales, material inexistente,
+  casos sin T0 y nombres de caso que darían la misma pestaña en el Excel.
+- Corregido: con acrónimos repetidos, los resultados de estabilidad se asignaban al elemento equivocado.
+- Corregido: nombres de caso largos generaban pestañas de más de 31 caracteres (Excel puede no abrir el fichero).
+- Nombres de caso únicos al añadirlos y renombrado con doble clic; cada pestaña de estabilidad indica
+  el fichero del caso y el de referencia.
+- El punto FEM admite x;y;z también en la tabla (antes la interfaz lo rechazaba).
+- Lectura de CSV separados por comas; los modelos pequeños en mm ya no se interpretan como metros
+  (umbral de extensión 5).
+- Acrónimos por defecto útiles y únicos con etiquetas de varias palabras.
+- Aviso si el perfil usa un material que no está en materiales.json (antes se cambiaba en silencio a CTE manual).
+- Lanzadores .bat: admiten rutas de Python con espacios.
+
 ## 1.5.1
 - Lectura robusta de ficheros con finales de línea anómalos (\r\r\n).
 - Corrección de un test que fallaba en Windows; los tests automáticos se ejecutan también en Windows.
