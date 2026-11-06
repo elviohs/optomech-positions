@@ -1,5 +1,12 @@
 # Cambios
 
+## 1.5.0
+- La tolerancia de posicionado por defecto pasa a la pestaña 1, junto al panel de tolerancias por
+  elemento; la tabla muestra el valor por defecto aplicado.
+- Ejecutable de Windows con PyInstaller (optomech-positions.spec, build_exe.bat) y workflow que lo
+  compila, lo verifica (--autotest) y lo adjunta a la release al subir una etiqueta v*.
+- materiales.json editable junto al ejecutable.
+
 ## 1.4.0
 - Comprobación de espejos fuera de eje: el punto de impacto y la normal se calculan sobre la cónica
   (radio y cónica leídos de SURFACE DATA SUMMARY). Se muestra la distancia impacto − posición CREO.

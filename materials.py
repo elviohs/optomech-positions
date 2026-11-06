@@ -16,10 +16,23 @@
 # =============================================================================
 
 import json
+import sys
 from bisect import bisect_left
 from pathlib import Path
 
-MAT_FILE = Path(__file__).with_name("materiales.json")
+
+def _default_mat_file() -> Path:
+    """materiales.json junto al programa; en el .exe, junto al ejecutable (editable) y si no
+    existe, la copia incluida dentro del ejecutable."""
+    if getattr(sys, "frozen", False):
+        beside = Path(sys.executable).with_name("materiales.json")
+        if beside.exists():
+            return beside
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "materiales.json"
+    return Path(__file__).with_name("materiales.json")
+
+
+MAT_FILE = _default_mat_file()
 
 
 class Material:

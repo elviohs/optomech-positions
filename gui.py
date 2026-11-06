@@ -168,7 +168,17 @@ class App(tk.Tk):
         self.btn_restore = ttk.Button(acts, text="Restaurar quitados", command=self.restore_removed)
         self.btn_restore.pack(side="left", padx=4)
 
-        tol = ttk.LabelFrame(acts, text="Tolerancia de posicionado de los seleccionados", padding=(8, 2))
+        tolrow = ttk.Frame(f)
+        tolrow.pack(fill="x", pady=(0, 4))
+        tdef = ttk.LabelFrame(tolrow, text="Tolerancia por defecto (elementos sin tolerancia propia)",
+                              padding=(8, 2))
+        tdef.pack(side="left")
+        ttk.Label(tdef, text="Posición (mm)").pack(side="left")
+        ttk.Entry(tdef, textvariable=self.pvars["round_pos_mm"], width=7).pack(side="left", padx=4)
+        ttk.Label(tdef, text="Ángulo (°)").pack(side="left", padx=(8, 0))
+        ttk.Entry(tdef, textvariable=self.pvars["round_ang_deg"], width=7).pack(side="left", padx=4)
+
+        tol = ttk.LabelFrame(tolrow, text="Tolerancia de los elementos seleccionados", padding=(8, 2))
         tol.pack(side="right")
         ttk.Label(tol, text="Posición (mm)").pack(side="left")
         ttk.Combobox(tol, textvariable=self.v_tol_pos, width=7,
@@ -177,13 +187,16 @@ class App(tk.Tk):
         ttk.Combobox(tol, textvariable=self.v_tol_ang, width=7,
                      values=["0.5", "0.2", "0.1", "0.05", "0.02", "0.01", "0.005"]).pack(side="left", padx=4)
         ttk.Button(tol, text="Aplicar", command=self.apply_tolerance).pack(side="left", padx=4)
-        ttk.Button(tol, text="Por defecto", command=lambda: self.apply_tolerance(default=True)).pack(side="left")
+        ttk.Button(tol, text="Por defecto",
+                   command=lambda: self.apply_tolerance(default=True)).pack(side="left")
+        for k in ("round_pos_mm", "round_ang_deg"):
+            self.pvars[k].trace_add("write", lambda *a: self._refresh_tree() if hasattr(self, "tree") else None)
 
         ttk.Label(f, foreground="#555", justify="left", wraplength=1120, text=(
             "Doble clic para editar una celda (Incl. se activa/desactiva con doble clic). Ctrl/Mayús + clic para "
             "seleccionar varias filas; Supr para quitarlas de la tabla.\n"
             "Tolerancia: selecciona uno o varios elementos, elige posición/ángulo y pulsa Aplicar. "
-            "(def.) = tolerancia por defecto de la pestaña 2.\n"
+            "(def.) = tolerancia por defecto, que se fija a la izquierda bajo la tabla.\n"
             "Offset pos.: superficies a avanzar solo para X,Y,Z (cuando la posición mecánica está en el "
             "coordinate break siguiente).  "
             "Override: ángulos CREO forzados (solo casos ty=±90° verificados en CREO); "
@@ -216,15 +229,8 @@ class App(tk.Tk):
             "estudio de estabilidad. Debe coincidir con la fijación real del banco al criostato.")
                   ).grid(row=3, column=0, columnspan=2, sticky="w", pady=4)
 
-        g3 = ttk.LabelFrame(f, text="Tolerancia de posicionado por defecto (intervalo de redondeo)", padding=8)
-        g3.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
-        self._param_rows(g3, ["round_pos_mm", "round_ang_deg"])
-        ttk.Label(g3, foreground="#555", wraplength=380, justify="left", text=(
-            "Se aplica a los elementos sin tolerancia propia en la tabla. Redondeo con la mitad "
-            "hacia fuera (igual que ROUND de Excel).")).grid(row=2, column=0, columnspan=2, sticky="w")
-
         g4 = ttk.LabelFrame(f, text="Material del banco (curvas en materiales.json)", padding=8)
-        g4.grid(row=1, column=1, sticky="nsew", padx=4, pady=4)
+        g4.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=4, pady=4)
         ttk.Label(g4, text="Material").grid(row=0, column=0, sticky="w")
         self.cb_mat = ttk.Combobox(g4, textvariable=self.v_material, width=28, state="readonly")
         self.cb_mat.grid(row=0, column=1, sticky="w", padx=6)
@@ -472,7 +478,8 @@ class App(tk.Tk):
                 if c in BOOL_COLS:
                     v = "✔" if v else "—"
                 elif c in STEP_COLS and not str(v).strip():
-                    v = "(def.)"
+                    dv = self.pvars["round_pos_mm" if c == "pos_step" else "round_ang_deg"].get()
+                    v = f"(def. {dv})"
                 vals.append(v)
             self.tree.insert("", "end", iid=str(i), values=vals)
         if hasattr(self, "btn_restore"):
@@ -505,7 +512,7 @@ class App(tk.Tk):
                 if key == "pos_offset":
                     setattr(el, key, int(txt or 0))
                 elif key in STEP_COLS:
-                    if txt in ("", "(def.)"):
+                    if txt == "" or txt.startswith("(def"):
                         setattr(el, key, "")
                     else:
                         v = float(txt.replace(",", "."))
@@ -1059,8 +1066,33 @@ class App(tk.Tk):
             var.set(p)
 
 
+def _autotest(profile, out_xlsx):
+    """Carga un perfil, calcula y guarda el Excel sin intervención (para verificar el .exe)."""
+    app = App()
+    app.withdraw()
+    app.load_profile(profile)
+    out = Path(out_xlsx).resolve()
+    app.v_out_dir.set(str(out.parent))
+    app.v_out_name.set(out.name)
+    app.v_open_excel.set(False)
+    app.run()
+    import time
+    t0 = time.time()
+    while time.time() - t0 < 120:
+        app.update()
+        txt = app.log.get("1.0", "end")
+        if "Excel generado" in txt or "[ERROR]" in txt:
+            break
+        time.sleep(0.05)
+    ok = out.exists() and "[ERROR]" not in app.log.get("1.0", "end")
+    out.with_suffix(".log").write_text(app.log.get("1.0", "end"), encoding="utf-8")
+    app.destroy()
+    return 0 if ok else 1
+
+
 if __name__ == "__main__":
-    import sys
+    if len(sys.argv) >= 4 and sys.argv[1] == "--autotest":
+        sys.exit(_autotest(sys.argv[2], sys.argv[3]))
     app = App()
     if len(sys.argv) > 1:
         app.after(200, lambda: app.load_profile(sys.argv[1]))

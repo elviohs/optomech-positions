@@ -21,6 +21,17 @@ Herramienta para pasar las posiciones de un sistema óptico diseñado en **Zemax
 
 ## Instalación
 
+### Ejecutable para Windows (sin Python)
+
+1. Descarga `optomech-positions-windows.zip` desde la sección *Releases* del repositorio.
+2. Descomprímelo y ejecuta `optomech-positions.exe`.
+
+El zip incluye `materiales.json`, que se puede editar porque el programa lo lee junto al ejecutable, y los ejemplos.
+
+El ejecutable no está firmado digitalmente, así que Windows puede mostrar el aviso "Windows protegió su PC". Para abrirlo, pulsa *Más información → Ejecutar de todas formas*. Si el antivirus corporativo lo bloquea, habla con el servicio de informática.
+
+### Con Python
+
 Requiere Python 3.9 o superior. La interfaz usa `tkinter`, que viene incluido en Python de python.org.
 
 ```bash
@@ -127,6 +138,13 @@ Para añadir un material, copia los coeficientes de la tabla *Linear Expansion* 
 - Supone un único banco de un solo material.
 - Los ficheros Zemax con multiconfiguración deben exportarse una configuración cada vez.
 
+## Generar el ejecutable
+
+- **Automático:** al subir una etiqueta de versión (`git tag v1.5.0` y `git push --tags`), GitHub Actions compila el `.exe` en Windows, lo verifica con `--autotest` y lo adjunta a la *release* de esa versión.
+- **Manual:** ejecuta `build_exe.bat`. El resultado queda en `dist\optomech-positions.exe`.
+
+El modo `optomech-positions.exe --autotest perfil.json salida.xlsx` calcula un perfil sin interfaz y sirve para comprobar que el ejecutable funciona.
+
 ## Tests
 
 ```bash
@@ -145,6 +163,7 @@ materials.py       curvas de dilatación ε(T), α(T)
 excel_out.py       generación del Excel
 gui.py             interfaz tkinter
 cli.py             ejecución por línea de comandos
+optomech-positions.spec, build_exe.bat   generación del ejecutable (PyInstaller)
 materiales.json    base de materiales
 ejemplos/          sistema sintético de 3 espejos (Zemax + ANSYS)
 tests/             pruebas automáticas

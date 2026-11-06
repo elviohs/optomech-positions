@@ -7,3 +7,6 @@ results/
 ~$*
 # Datos de proyectos reales: no subir al repositorio
 datos_proyecto/
+build/
+dist/
+*.spec.bak
