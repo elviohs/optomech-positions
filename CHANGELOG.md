@@ -1,5 +1,9 @@
 # Cambios
 
+## 1.5.3
+- Corregido: `cli.py` fallaba (UnicodeEncodeError) al redirigir la salida a un fichero en Windows;
+  la salida de la CLI se escribe ahora en UTF-8.
+
 ## 1.5.2 — revisión de fallos
 - Validación de la configuración antes de calcular (GUI y CLI): acrónimos vacíos o repetidos,
   tolerancias, overrides y puntos FEM mal escritos, temperaturas iguales, material inexistente,

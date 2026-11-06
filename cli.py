@@ -23,7 +23,18 @@ def main(profile):
     print("Excel:", excel_out.write_workbook(out, zf, info, prm, res, stab, warnings, t0, cases, dref))
 
 
+def _utf8_output():
+    """Salida en UTF-8: al redirigir a un fichero en Windows, Python usa cp1252 y no puede escribir
+    caracteres como 'α' o 'µ' (UnicodeEncodeError)."""
+    for s in (sys.stdout, sys.stderr):
+        try:
+            s.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):      # flujo sustituido (p. ej. por un IDE)
+            pass
+
+
 if __name__ == "__main__":
+    _utf8_output()
     if len(sys.argv) < 2:
         sys.exit("Uso: python cli.py perfil.json")
     main(sys.argv[1])
