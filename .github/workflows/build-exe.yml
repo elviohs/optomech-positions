@@ -43,9 +43,29 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view $env:GITHUB_REF_NAME 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create $env:GITHUB_REF_NAME optomech-positions-windows.zip --title $env:GITHUB_REF_NAME --notes "Ejecutable para Windows. Cambios: ver CHANGELOG.md"
+          # Notas: plantilla .github/release_notes.md + sección de CHANGELOG.md de esta versión
+          $tag = $env:GITHUB_REF_NAME
+          $ver = $tag -replace '^v', ''
+          $lines = Get-Content CHANGELOG.md -Encoding utf8
+          $ini = -1
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match ('^## ' + [regex]::Escape($ver) + '(\s|$)')) { $ini = $i; break }
+          }
+          if ($ini -lt 0) {
+            $changes = "Ver CHANGELOG.md."
           } else {
-            gh release upload $env:GITHUB_REF_NAME optomech-positions-windows.zip --clobber
+            $sec = @()
+            for ($j = $ini + 1; $j -lt $lines.Count -and $lines[$j] -notmatch '^## '; $j++) { $sec += $lines[$j] }
+            $changes = ($sec -join "`n").Trim()
+          }
+          $m = (pytest -q --collect-only | Out-String) | Select-String '(\d+) tests? collected'
+          $ntests = if ($m) { $m.Matches[0].Groups[1].Value } else { 'Varios' }
+          $notes = (Get-Content .github\release_notes.md -Raw -Encoding utf8).Replace('{VERSION}', $tag).Replace('{TAG}', $tag).Replace('{CHANGES}', $changes).Replace('{NTESTS}', $ntests)
+          [IO.File]::WriteAllText("$PWD\notas_release.md", $notes, (New-Object Text.UTF8Encoding $false))
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag optomech-positions-windows.zip --title $tag --notes-file notas_release.md
+          } else {
+            gh release upload $tag optomech-positions-windows.zip --clobber
+            gh release edit $tag --notes-file notas_release.md
           }
