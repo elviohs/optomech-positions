@@ -1,5 +1,21 @@
 # Cambios
 
+## 1.5.4 — correcciones de la revisión externa
+- Ficheros FEM: una fila con valores no numéricos se descarta entera (antes desalineaba las
+  temperaturas de todos los nodos siguientes) y se avisa.
+- Al abrir un perfil se descartan las superficies del anterior; no se calcula si el fichero Zemax
+  indicado no es el que está cargado.
+- Etiquetas repetidas: cada elemento guarda su nº de aparición (occurrence) y conserva su
+  configuración al releer un Zemax renumerado. Los perfiles antiguos se adaptan solos.
+- Offset de posición fuera de rango: se valida antes de calcular y la vista 2D ya no falla.
+- Cerca de ty = ±90°: se usa la fórmula general (antes se forzaba tz = 0 hasta 0,08° de 90°, con
+  errores de orientación); la convención tz = 0 solo con ty = 90° exacto. Aviso si |ty| está a
+  menos de 0,5° de 90° y nueva columna 'Δ orient. redondeo' en el Excel.
+- ty se calcula con atan2 y el ángulo entre orientaciones con una fórmula estable para ángulos pequeños.
+- Búsqueda de nodos FEM lejos de la malla: de ~12 s a milisegundos.
+- Número de versión visible en la ventana y en la pestaña Parametros del Excel (version.py).
+- `python cli.py --version` muestra la versión.
+
 ## 1.5.3
 - Corregido: `cli.py` fallaba (UnicodeEncodeError) al redirigir la salida a un fichero en Windows;
   la salida de la CLI se escribe ahora en UTF-8.

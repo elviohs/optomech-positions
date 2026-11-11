@@ -107,7 +107,15 @@ def build_path(surfaces, elements, tol_deg: float = 0.05, ignore=None):
     """Devuelve (lista de PathNode, lista de avisos)."""
     warnings = []
     idx = {s.surf_id: i for i, s in enumerate(surfaces)}
-    els = sorted([e for e in elements if e.include and e.surf_id in idx], key=lambda e: idx[e.surf_id])
+    els = []
+    for e in elements:
+        if not e.include or e.surf_id not in idx:
+            continue
+        if not 0 <= idx[e.surf_id] + e.pos_offset < len(surfaces):
+            warnings.append(f"{e.acronym}: offset de posición fuera de rango; no se dibuja.")
+            continue
+        els.append(e)
+    els.sort(key=lambda e: idx[e.surf_id])
     if not els:
         return [], ["No hay elementos incluidos."]
 

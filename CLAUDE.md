@@ -28,7 +28,7 @@ documentación: español.
 - Ejecutable local: `build_exe.bat`  →  `dist\optomech-positions.exe`
 
 ## Flujo para publicar una versión
-1. Cambios + tests nuevos o adaptados + entrada en `CHANGELOG.md` (versión X.Y.Z).
+1. Cambios + tests nuevos o adaptados + entrada en `CHANGELOG.md` (versión X.Y.Z) + `__version__` en `version.py`.
 2. `python -m pytest -q` en verde.
 3. Comprobar con `git status` que no entra ningún dato real (ver reglas).
 4. `git add -A`, `git commit -m "vX.Y.Z: …"`, `git push`.

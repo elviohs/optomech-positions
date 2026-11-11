@@ -2,6 +2,7 @@
 import json, sys
 from pathlib import Path
 import core, excel_out
+from version import __version__
 
 
 def main(profile):
@@ -12,10 +13,10 @@ def main(profile):
         print(m)
         if m.startswith(("[AVISO]", "[ERROR]")):
             warnings.append(m)
-    errs = core.validate_setup(els, prm, cases, t0, dref)
+    surfs, info = core.read_zemax(zf)
+    errs = core.validate_setup(els, prm, cases, t0, dref, surfaces=surfs)
     if errs:
         sys.exit("Errores en el perfil:\n  - " + "\n  - ".join(errs))
-    surfs, info = core.read_zemax(zf)
     core.check_material(prm, log)
     res = core.compute_positions(surfs, els, prm, log)
     stab = core.run_stability(res, prm, t0, cases, dref, log)
@@ -35,6 +36,9 @@ def _utf8_output():
 
 if __name__ == "__main__":
     _utf8_output()
+    if "--version" in sys.argv:
+        print(__version__)
+        sys.exit(0)
     if len(sys.argv) < 2:
         sys.exit("Uso: python cli.py perfil.json")
     main(sys.argv[1])

@@ -5,6 +5,7 @@ import datetime as _dt
 import re
 
 import core
+from version import __version__
 from dataclasses import asdict
 from pathlib import Path
 
@@ -36,6 +37,7 @@ def write_workbook(path, zemax_file, zemax_info, prm, results, stability, warnin
     ws["A1"] = "Parámetros del cálculo"; ws["A1"].font = tf
     rows = [
         ("Fecha", _dt.datetime.now().strftime("%Y-%m-%d %H:%M")),
+        ("Versión del programa", __version__),
         ("Fichero Zemax", zemax_file),
         ("Superficie de referencia Zemax", zemax_info.get("reference_surface")),
         ("T frío (K)", prm.t_cold_k), ("T caliente (K)", prm.t_warm_k),
@@ -102,6 +104,7 @@ def write_workbook(path, zemax_file, zemax_info, prm, results, stability, warnin
         header_block(ws, 4, 4 + 6 * g, t, SUB6, col)
     header_block(ws, 4, 34, "Tolerancia aplicada", ["Pos. (mm)", "Áng. (°)"], LILAC)
     header_block(ws, 4, 36, "Override", ["Δ orient. (°)"], LILAC)
+    header_block(ws, 4, 37, "Redondeo", ["Δ orient. redondeo (°)"], LILAC)
     for i, r in enumerate(results):
         row = 6 + i
         ws.cell(row, 1, r.cfg.acronym).font = df
@@ -115,6 +118,7 @@ def write_workbook(path, zemax_file, zemax_info, prm, results, stability, warnin
         put(ws, row, 34, float(r.pos_step), LILAC, "0.000")
         put(ws, row, 35, float(r.ang_step), LILAC, "0.000")
         put(ws, row, 36, round(r.override_dev_deg, 3) if r.override_used else "", LILAC)
+        put(ws, row, 37, float(r.round_dev_deg), LILAC, "0.0000")
     ws.freeze_panes = "D6"
 
     # ------------------------------------------------------------ Zemax global

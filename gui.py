@@ -21,6 +21,7 @@ import core
 import excel_out
 import geometry
 import materials
+from version import __version__
 
 APP_TITLE = "Posiciones optomecánicas — Zemax / CREO / ANSYS"
 MANUAL_MAT = "(CTE manual)"
@@ -54,12 +55,13 @@ STEP_COLS = {"pos_step", "ang_step"}
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(APP_TITLE)
+        self.title(f"{APP_TITLE}  —  v{__version__}")
         self.geometry("1180x820")
         self.minsize(1000, 700)
 
         self.surfaces = []
         self.zemax_info = {}
+        self._loaded_zemax = ""      # fichero del que proceden self.surfaces
         self.elements: list[core.ElementCfg] = []
         self.fem_cases: list[tuple] = []        # (etiqueta, [ficheros], "temp" | "desp")
         self.disp_ref: list[str] = []           # referencia de desplazamientos (opcional)
@@ -441,31 +443,16 @@ class App(tk.Tk):
             return
         try:
             self.surfaces, self.zemax_info = core.read_zemax(path)
+            self._loaded_zemax = str(Path(path).resolve())
         except Exception as e:
+            self.surfaces, self.zemax_info, self._loaded_zemax = [], {}, ""
+            self._refresh_tree()
             messagebox.showerror("Zemax", str(e))
             return
         fresh = core.default_elements(self.surfaces, self.v_show_all.get(), self.v_ignore.get())
-        old_map = {self._key(e): e for e in self.elements}
-        merged, skipped = [], 0
-        for d in fresh:
-            k = self._key(d)
-            if k in self.removed:
-                skipped += 1
-                continue
-            old = old_map.get(k)
-            if old:
-                if old.surf_id != d.surf_id:
-                    self._log(f"[AVISO] '{d.zemax_label}' ha pasado de la superficie "
-                              f"{old.surf_id} a la {d.surf_id}.", "warn")
-                old.surf_id = d.surf_id
-                merged.append(old)
-            else:
-                merged.append(d)
-        fresh_keys = {self._key(d) for d in fresh}
-        for k, e in old_map.items():
-            if k not in fresh_keys and e.include:
-                self._log(f"[AVISO] El elemento del perfil '{e.zemax_label}' ya no existe en el "
-                          f"fichero Zemax.", "warn")
+        merged, msgs, skipped = core.merge_elements(self.elements, fresh, self.removed)
+        for m in msgs:
+            self._log(m, "warn")
         if skipped:
             self._log(f"{skipped} elemento(s) quitado(s) previamente no se muestran "
                       f"(botón 'Restaurar quitados').")
@@ -628,9 +615,7 @@ class App(tk.Tk):
 
     def _key(self, e) -> str:
         """Identificador estable: etiqueta + nº de aparición de esa etiqueta en el fichero Zemax."""
-        same = [s.surf_id for s in self.surfaces if s.comment == e.zemax_label]
-        n = same.index(e.surf_id) if e.surf_id in same else 0
-        return f"{e.zemax_label}|{n}"
+        return core.element_key(e)
 
     def _selected(self):
         return [self.elements[int(i)] for i in self.tree.selection()]
@@ -714,6 +699,7 @@ class App(tk.Tk):
             return
         self._set_params(core.Params())
         self.elements, self.surfaces, self.fem_cases = [], [], []
+        self.zemax_info, self._loaded_zemax = {}, ""
         self._set_disp_ref([])
         self.removed = set()
         self._update_restore_btn()
@@ -746,6 +732,7 @@ class App(tk.Tk):
             zf, prm, els, t0, cases, od, on, dref = core.profile_from_dict(d, base=Path(p).parent)
         except Exception as e:
             messagebox.showerror("Perfil", f"No se pudo leer el perfil:\n{e}"); return
+        self.surfaces, self.zemax_info, self._loaded_zemax = [], {}, ""   # nada del perfil anterior
         self._set_params(prm)
         if prm.material and prm.material not in materials.load_materials():
             messagebox.showwarning("Material", f"El perfil usa el material '{prm.material}', que no está "
@@ -781,7 +768,13 @@ class App(tk.Tk):
             messagebox.showerror("Parámetros", str(e)); return
         if not self.surfaces:
             messagebox.showwarning("Zemax", "Primero lee un fichero Zemax."); return
-        errs = core.validate_setup(self.elements, prm, self.fem_cases, self.v_t0.get(), self.disp_ref)
+        cur = self.v_zemax.get().strip()
+        if not cur or str(Path(cur).resolve()) != self._loaded_zemax:
+            messagebox.showwarning("Zemax", "El fichero Zemax indicado no es el que está cargado en la tabla. "
+                                   "Pulsa 'Leer superficies' antes de calcular.")
+            return
+        errs = core.validate_setup(self.elements, prm, self.fem_cases, self.v_t0.get(), self.disp_ref,
+                                   surfaces=self.surfaces)
         if errs:
             for e in errs:
                 self._log(f"[ERROR] {e}", "err")

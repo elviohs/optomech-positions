@@ -30,7 +30,8 @@ ZEMAX_SECTION_END = "GLOBAL SURFACE CENTER OF CURVATURE"
 
 DEFAULT_IGNORE = {"tilt x", "tilt y", "tilt z", "field rotation"}
 
-GIMBAL_TOL = 1e-6
+GIMBAL_TOL = 1e-12         # cos(ty) por debajo de esto -> ty = ±90° exacto (gimbal lock)
+NEAR_GIMBAL_DEG = 0.5      # aviso: tx y tz mal condicionados si |ty| está a menos de esto de 90°
 
 # Si una malla FEM "en mm" mide menos de esto, en realidad está en metros (un banco óptico en
 # metros mide < 5; un modelo real en mm mide bastante más de 5 mm). Ver read_fem / read_disp.
@@ -72,6 +73,7 @@ class ElementCfg:
     ang_step: str = ""               # intervalo de tolerancia angular (°); vacío = valor por defecto
     override: str = ""               # "tx;ty;tz" en convención CREO, vacío = automático
     fem_point: str = ""              # "x;y" punto de muestreo FEM (vacío = posición del elemento)
+    occurrence: int = 0              # nº de aparición de la etiqueta en el fichero Zemax (0, 1, …)
 
 
 @dataclass
@@ -172,6 +174,7 @@ class ElementResult:
     override_dev_deg: float = 0.0
     pos_step: float = 0.0
     ang_step: float = 0.0
+    round_dev_deg: float = 0.0     # orientación de los ángulos redondeados frente a la de Zemax
 
 
 @dataclass
@@ -243,18 +246,30 @@ def creo_matrix(tx, ty, tz):
 
 
 def rotation_angle_between(A, B) -> float:
-    """Ángulo (grados) de la rotación que lleva A a B."""
+    """Ángulo (grados) de la rotación que lleva A a B. Se usa atan2 con la parte antisimétrica,
+    precisa también para ángulos muy pequeños (acos de la traza pierde precisión cerca de 0)."""
     M = _mm(_tr(A), B)
     c = (M[0][0] + M[1][1] + M[2][2] - 1.0) / 2.0
-    return math.degrees(math.acos(max(-1.0, min(1.0, c))))
+    s = 0.5 * math.sqrt((M[2][1] - M[1][2]) ** 2 + (M[0][2] - M[2][0]) ** 2 + (M[1][0] - M[0][1]) ** 2)
+    return math.degrees(math.atan2(s, c))
+
+
+def is_gimbal(R) -> bool:
+    """ty = ±90° exacto: cos(ty) = |(R00, R10)| nulo a precisión de máquina (como lo imprime Zemax)."""
+    return math.hypot(R[0][0], R[1][0]) < GIMBAL_TOL
 
 
 def r_to_creo_angles(R):
-    """Ángulos CREO (tx, ty, tz) en grados a partir de la matriz R de Zemax."""
-    s = max(-1.0, min(1.0, -R[2][0]))
-    ty = math.degrees(math.asin(s))
-    if abs(abs(s) - 1.0) < GIMBAL_TOL:
-        sign = 1.0 if s > 0 else -1.0
+    """Ángulos CREO (tx, ty, tz) en grados a partir de la matriz R de Zemax.
+
+    ty se calcula con atan2 (estable cerca de ±90°). Solo con ty = ±90° exacto (gimbal lock) se
+    aplica la convención tz = 0, tx = atan2(±R01, ±R02); cerca de 90° se usa la fórmula general,
+    que conserva la orientación exacta.
+    """
+    cos_ty = math.hypot(R[0][0], R[1][0])
+    ty = math.degrees(math.atan2(-R[2][0], cos_ty))
+    if cos_ty < GIMBAL_TOL:
+        sign = 1.0 if -R[2][0] > 0 else -1.0
         tx = math.degrees(math.atan2(sign * R[0][1], sign * R[0][2]))
         tz = 0.0
     else:
@@ -407,9 +422,11 @@ def parse_ignore(text: str) -> set:
 def default_elements(surfaces: list[Surface], show_all: bool = False,
                      ignore: str = "") -> list[ElementCfg]:
     ign = parse_ignore(ignore) if ignore else DEFAULT_IGNORE
-    out, used = [], set()
+    out, used, seen = [], set(), {}
     for s in surfaces:
         c = s.comment
+        occ = seen.get(c, 0)
+        seen[c] = occ + 1
         if not show_all and (not c or c.lower() in ign):
             continue
         acr = default_acronym(c, s.surf_id)
@@ -417,8 +434,52 @@ def default_elements(surfaces: list[Surface], show_all: bool = False,
         while acr in used:                       # acrónimos siempre únicos
             acr, n = f"{base}_{n}", n + 1
         used.add(acr)
-        out.append(ElementCfg(surf_id=s.surf_id, zemax_label=c, acronym=acr, include=bool(c)))
+        out.append(ElementCfg(surf_id=s.surf_id, zemax_label=c, acronym=acr, include=bool(c), occurrence=occ))
     return out
+
+
+def element_key(e) -> str:
+    """Identificador de un elemento que no cambia al renumerar el Zemax: etiqueta + nº de aparición."""
+    return f"{e.zemax_label}|{e.occurrence}"
+
+
+def fix_occurrences(elements):
+    """Perfiles anteriores a la v1.5.3 no guardaban 'occurrence': con etiquetas repetidas se asigna
+    por orden de superficie (la renumeración de Zemax conserva ese orden)."""
+    by_label = {}
+    for e in elements:
+        by_label.setdefault(e.zemax_label, []).append(e)
+    for group in by_label.values():
+        if len(group) > 1 and len({e.occurrence for e in group}) < len(group):
+            for n, e in enumerate(sorted(group, key=lambda x: x.surf_id)):
+                e.occurrence = n
+    return elements
+
+
+def merge_elements(old, fresh, removed=()):
+    """Combina la configuración existente (old) con las superficies recién leídas (fresh).
+    Devuelve (lista combinada, mensajes, nº de elementos quitados que no se muestran)."""
+    old_map = {element_key(e): e for e in old}
+    removed = set(removed)
+    merged, msgs, skipped = [], [], 0
+    for d in fresh:
+        k = element_key(d)
+        if k in removed:
+            skipped += 1
+            continue
+        o = old_map.get(k)
+        if o:
+            if o.surf_id != d.surf_id:
+                msgs.append(f"[AVISO] '{d.zemax_label}' ha pasado de la superficie {o.surf_id} a la {d.surf_id}.")
+            o.surf_id = d.surf_id
+            merged.append(o)
+        else:
+            merged.append(d)
+    fresh_keys = {element_key(d) for d in fresh}
+    for k, e in old_map.items():
+        if k not in fresh_keys and e.include:
+            msgs.append(f"[AVISO] El elemento del perfil '{e.zemax_label}' ya no existe en el fichero Zemax.")
+    return merged, msgs, skipped
 
 
 def default_acronym(label: str, surf_id: int) -> str:
@@ -471,9 +532,10 @@ def round_pose(p: Pose, pos_step: float, ang_step: float) -> Pose:
                 round_excel(p.tx, a), round_excel(p.ty, a), round_excel(p.tz, a))
 
 
-def validate_setup(elements, prm: Params, cases=(), t0="", disp_ref=()) -> list[str]:
+def validate_setup(elements, prm: Params, cases=(), t0="", disp_ref=(), surfaces=None) -> list[str]:
     """Comprueba la configuración antes de calcular. Devuelve la lista de errores (vacía si todo va bien)."""
     errs = []
+    idx = {s.surf_id: i for i, s in enumerate(surfaces)} if surfaces else None
     inc = [e for e in elements if e.include]
     if not inc:
         errs.append("No hay ningún elemento incluido.")
@@ -506,6 +568,12 @@ def validate_setup(elements, prm: Params, cases=(), t0="", disp_ref=()) -> list[
                 errs.append(f"{tag}: punto FEM no válido ('{e.fem_point}'); debe ser 'x;y' o 'x;y;z'.")
         if e.pos_offset < 0:
             errs.append(f"{tag}: el offset de posición no puede ser negativo.")
+        if idx is not None:
+            if e.surf_id not in idx:
+                errs.append(f"{tag}: la superficie {e.surf_id} no existe en el fichero Zemax.")
+            elif idx[e.surf_id] + e.pos_offset >= len(surfaces):
+                errs.append(f"{tag}: offset de posición {e.pos_offset} fuera de rango (no hay tantas "
+                            f"superficies después de la {e.surf_id}).")
     if prm.t_warm_k == prm.t_cold_k and not prm.use_manual_factor:
         errs.append("La temperatura de montaje y la de operación son iguales.")
     if prm.round_pos_mm <= 0 or prm.round_ang_deg <= 0:
@@ -571,15 +639,20 @@ def compute_positions(surfaces, elements, prm: Params, log=print) -> list[Elemen
             if dev > 0.01:
                 log(f"[AVISO] {cfg.acronym}: el override ({otx}, {oty}, {otz}) cambia la "
                     f"orientación física respecto a Zemax en {dev:.2f}°. Compruébalo en CREO.")
-        elif abs(abs(ty) - 90.0) < 1e-4:
+        elif is_gimbal(surf.R):
             log(f"[INFO] {cfg.acronym}: ty = ±90° (gimbal lock). Convención automática tz = 0.")
+        elif abs(abs(ty) - 90.0) < NEAR_GIMBAL_DEG:
+            log(f"[AVISO] {cfg.acronym}: ty = {ty:.4f}°, muy cerca de ±90°. tx y tz están mal condicionados: "
+                f"redondearlos por separado puede desorientar el espejo más de lo esperado. Revisa la "
+                f"columna 'Δ orient. redondeo' del Excel.")
 
         cold = Pose(psurf.x, psurf.y, psurf.z, tx, ty, tz)
         warm = cold_to_warm(cold, prm)
         ps, an = element_steps(cfg, prm)
         warm_r = round_pose(warm, ps, an)
         back = warm_to_cold(warm_r, prm)
-        results.append(ElementResult(cfg, surf, psurf, cold, warm, warm_r, back, used, dev, ps, an))
+        rdev = rotation_angle_between(creo_matrix(warm_r.tx, warm_r.ty, warm_r.tz), creo_matrix(tx, ty, tz))
+        results.append(ElementResult(cfg, surf, psurf, cold, warm, warm_r, back, used, dev, ps, an, rdev))
     return results
 
 
@@ -621,15 +694,22 @@ def read_fem(path, units: str = "auto", log=print) -> FEMData:
         hdr_unit = m.group(1).strip().lower()
 
     ids, xs, ys, zs, ts = [], [], [], [], []
-    for ln in text[1:]:
+    bad, first_bad = 0, None
+    for n_line, ln in enumerate(text[1:], start=2):
         p = _split_row(ln.strip())
         if len(p) < 5:
             continue
-        try:
-            ids.append(int(float(_f(p[0]))))
-            xs.append(_f(p[1])); ys.append(_f(p[2])); zs.append(_f(p[3])); ts.append(_f(p[4]))
+        try:                                   # se lee la fila entera antes de añadir nada
+            row = (int(float(_f(p[0]))), _f(p[1]), _f(p[2]), _f(p[3]), _f(p[4]))
         except ValueError:
+            bad += 1
+            first_bad = first_bad or n_line
             continue
+        for lst, v in zip((ids, xs, ys, zs, ts), row):
+            lst.append(v)
+    if bad:
+        log(f"[AVISO] {path.name}: {bad} fila(s) con valores no numéricos se han ignorado "
+            f"(la primera, en la línea {first_bad}).")
     if not ids:
         raise ValueError(f"No se han podido leer nodos en {path.name}")
 
@@ -667,23 +747,34 @@ class _Grid:
         for i, (x, y) in enumerate(zip(xs, ys)):
             self.cells.setdefault((int(math.floor(x / cell)), int(math.floor(y / cell))), []).append(i)
 
+    def _ring(self, cx, cy, r):
+        if r == 0:
+            yield cx, cy
+            return
+        for ix in range(cx - r, cx + r + 1):
+            yield ix, cy - r
+            yield ix, cy + r
+        for iy in range(cy - r + 1, cy + r):
+            yield cx - r, iy
+            yield cx + r, iy
+
     def knn(self, x, y, k):
-        cx, cy = int(math.floor(x / self.cell)), int(math.floor(y / self.cell))
+        c = self.cell
+        cx, cy = int(math.floor(x / c)), int(math.floor(y / c))
+        # Ningún nodo está más cerca que el rectángulo de la malla: se empieza en ese anillo.
+        dx = max(self.minx - x, 0.0, x - self.maxx)
+        dy = max(self.miny - y, 0.0, y - self.maxy)
+        r = max(0, int(max(dx, dy) / c) - 1)
         max_r = int(max(abs(x - self.minx), abs(x - self.maxx), abs(y - self.miny),
-                        abs(y - self.maxy)) / self.cell) + 2
+                        abs(y - self.maxy)) / c) + 2
         found = []
-        r = 0
         while r <= max_r:
-            for ix in range(cx - r, cx + r + 1):
-                for iy in range(cy - r, cy + r + 1):
-                    if max(abs(ix - cx), abs(iy - cy)) != r:
-                        continue
-                    for i in self.cells.get((ix, iy), ()):
-                        d = math.hypot(self.xs[i] - x, self.ys[i] - y)
-                        found.append((d, i))
+            for key in self._ring(cx, cy, r):
+                for i in self.cells.get(key, ()):
+                    found.append((math.hypot(self.xs[i] - x, self.ys[i] - y), i))
             if len(found) >= k:
                 best = heapq.nsmallest(k, found)
-                if best[-1][0] <= r * self.cell:   # nada más cercano puede aparecer fuera
+                if best[-1][0] <= r * c:     # fuera del anillo r nada está a menos de r·celda
                     return best
             r += 1
         return heapq.nsmallest(k, found)
@@ -1107,6 +1198,7 @@ def profile_from_dict(d, base=None):
         if e.get("fine_rounding") and not cfg.ang_step:      # perfiles de la versión anterior
             cfg.ang_step = str(fine_old)
         els.append(cfg)
+    fix_occurrences(els)
     cases = []
     for c in d.get("fem_cases", []):
         files = c.get("files") or [c.get("file", "")]          # perfiles antiguos: un solo "file"
